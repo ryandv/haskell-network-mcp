@@ -10,11 +10,9 @@
 module Network.MCP.Types
   ( ClientCapabilities(..)
 
-  , Data.Aeson.KeyMap.empty
+  , emptyObj
 
   , InitializeRequest(..)
-  , InitializeRequest(..)
-  , InitializeResponse(..)
   , InitializeResponse(..)
   , InitializedNotification(..)
 
@@ -45,10 +43,14 @@ import GHC.Records
 
 import Network.JSONRPC
 
+protocolVersion :: Text
 protocolVersion = "2025-03-26"
 
 customOptions :: Options
 customOptions = defaultOptions { omitNothingFields = True }
+
+emptyObj :: Object
+emptyObj = Data.Aeson.KeyMap.empty
 
 data Tool = Tool
   { name        :: Text
@@ -103,11 +105,18 @@ instance ToRequest InitializeRequest where
 instance FromResponse InitializeResponse where
   parseResult = const $ Just parseJSON
 
+-- the hardcoded protocolVersion seems to trip up
+-- aeson's generics...
 instance FromJSON InitializeRequest
 instance ToJSON InitializeRequest where
-  toJSON q = case genericToJSON customOptions q of
-    (Object o) -> Object $ insert "protocolVersion" protocolVersion o
-    _          -> genericToJSON customOptions q
+  toEncoding q = pairs (  "protocolVersion" .= protocolVersion
+                       <> "capabilities"    .= getField @"capabilities" q
+                       <> "clientInfo"      .= clientInfo q
+                       )
+  toJSON q = object [ "protocolVersion" .= protocolVersion
+                    , "capabilities"    .= (genericToJSON customOptions (getField @"capabilities" q))
+                    , "clientInfo"      .= (genericToJSON customOptions (clientInfo q))
+                    ]
 
 data InitializeResponse = InitializeResponse
   { capabilities    :: ServerCapabilities
@@ -115,10 +124,16 @@ data InitializeResponse = InitializeResponse
   , instructions    :: Maybe Text
   } deriving(Eq, Generic, Show)
 
--- aeson generic instance needs some help here
--- otherwise customOptions are not respected...
 instance FromJSON InitializeResponse
 instance ToJSON InitializeResponse where
+  toEncoding r = pairs (  "capabilities" .= getField @"capabilities" r
+                       <> "serverInfo"   .= serverInfo r
+                       <> "instructions" .= instructions r
+                       )
+  toJSON r = case genericToJSON customOptions r of
+    (Object o) -> Object $ insert "capabilities" (genericToJSON customOptions (getField @"capabilities" r))
+                         $ insert "serverInfo"   (genericToJSON customOptions (serverInfo r))
+                         $ o
 
 data InitializedNotification = InitializedNotification
 
@@ -134,8 +149,8 @@ instance ToJSON InitializedNotification where
 
 -- no experimental support
 data ClientCapabilities = ClientCapabilities
-  { roots        :: ListChangedCapability
-  , sampling     :: Object
+  { roots        :: Maybe ListChangedCapability
+  , sampling     :: Maybe Object
   } deriving(Eq, Generic, Show)
 
 instance FromJSON ClientCapabilities
@@ -144,11 +159,11 @@ instance ToJSON ClientCapabilities where
 
 -- no experimental support
 data ServerCapabilities = ServerCapabilities
-  { logging      :: Object
-  , completions  :: Object
-  , prompts      :: ListChangedCapability
-  , resources    :: ListChangedAndSubscriptionCapabilities
-  , tools        :: ListChangedCapability
+  { logging      :: Maybe Object
+  , completions  :: Maybe Object
+  , prompts      :: Maybe ListChangedCapability
+  , resources    :: Maybe ListChangedAndSubscriptionCapabilities
+  , tools        :: Maybe ListChangedCapability
   } deriving(Eq, Generic, Show)
 
 instance FromJSON ServerCapabilities
