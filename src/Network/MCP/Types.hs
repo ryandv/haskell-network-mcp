@@ -22,6 +22,8 @@ module Network.MCP.Types
   , ListChangedCapability(..)
   , ListChangedAndSubscriptionCapabilities(..)
 
+  , noCapabilities
+
   , ServerCapabilities(..)
 
   , Tool(..)
@@ -169,6 +171,15 @@ data ServerCapabilities = ServerCapabilities
 instance FromJSON ServerCapabilities
 instance ToJSON ServerCapabilities where
   toEncoding = genericToEncoding customOptions
+
+noCapabilities :: ServerCapabilities
+noCapabilities = ServerCapabilities
+  { logging     = Nothing
+  , completions = Nothing
+  , prompts     = Nothing
+  , resources   = Nothing
+  , tools       = Nothing
+  }
 
 data ListChangedCapability = ListChangedCapability
   { listChanged :: Bool

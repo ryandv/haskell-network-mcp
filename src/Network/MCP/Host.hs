@@ -19,6 +19,7 @@ import GHC.Records
 
 import Data.Aeson
 import Data.Aeson.Text
+import Data.Conduit.Combinators hiding(print)
 import Data.Conduit.Network
 import Data.Text
 import qualified Data.Text.Lazy as TL
@@ -45,45 +46,41 @@ client = jsonrpcTCPClient V2 True (clientSettings 6666 "localhost") $ do
   lift . logWithoutLoc "Client" LevelDebug . TL.toStrict . encodeToLazyText $ (res :: Maybe (Either ErrorObj InitializeResponse))
   return ()
 
-initializeResponseBuilder         :: TVar ServerContext -> InitializeRequest -> STM (Either ErrorObj InitializeResponse)
-initializeResponseBuilder ctx req = do
-  modifyTVar ctx (\s -> s { clientCapabilities = Just $ getField @"capabilities" req
-                          , currentState       = ServerInitializing
-                          })
+initializeResponseBuilder     :: InitializeRequest -> ReaderT (TVar ServerContext) (JSONRPCT (LoggingT IO)) (Either ErrorObj InitializeResponse)
+initializeResponseBuilder req = do
+  ctx <- ask
+  liftIO . atomically $ do
+    serverCaps <- fmap serverCapabilities . readTVar $ ctx
 
-  return . Right $ InitializeResponse
-    { capabilities = ServerCapabilities
-      { logging     = Nothing
-      , completions = Nothing
-      , prompts     = Nothing
-      , resources   = Nothing
-      , tools       = Just $ ListChangedCapability False
+    modifyTVar ctx (\s -> s { clientCapabilities = Just $ getField @"capabilities" req
+                            , currentState       = ServerInitializing
+                            })
+
+    return . Right $ InitializeResponse
+      { capabilities = serverCaps
+      , serverInfo   = Implementation "haskell-network-mcp" "v0.0.1"
+      , instructions = Nothing
       }
-    , serverInfo = Implementation "haskell-network-mcp" "v0.0.1"
-    , instructions = Nothing
-    }
 
 data ServerState = ServerStart | ServerInitializing | ServerInitialized deriving(Eq, Show)
 data ServerContext = ServerContext
   { currentState       :: ServerState
   , clientCapabilities :: Maybe ClientCapabilities
+  , serverCapabilities :: ServerCapabilities
   } deriving(Eq, Show)
 
-initialState :: ServerContext
-initialState = ServerContext ServerStart Nothing
+initialState      :: ServerCapabilities -> ServerContext
+initialState caps = ServerContext ServerStart Nothing caps
 
-server :: LoggingT IO ()
-server = do
-  ctx <- liftIO . atomically . newTVar $ initialState
+server              :: ServerCapabilities -> (Request -> ReaderT (TVar ServerContext) (JSONRPCT (LoggingT IO)) ()) -> LoggingT IO ()
+server caps handler = do
+  ctx <- liftIO . atomically . newTVar $ initialState caps
 
-  jsonrpcTCPServer V2 False (serverSettings 6666 "*4") $ runReaderT mainLoop ctx
+  runJSONRPCT V2 False stdout stdin . (flip runReaderT) ctx $ do
+    req <- lift receiveRequest
+    maybe logNothingRequest (liftA2 (>>) logRequest handleRequest) $ req
 
   where
-    mainLoop                          :: ReaderT (TVar ServerContext) (JSONRPCT (LoggingT IO)) ()
-    mainLoop                          = do
-      req <- lift receiveRequest
-      maybe logNothingRequest (liftA2 (>>) logRequest handleRequest) $ req
-
     handleRequest                     :: Request -> ReaderT (TVar ServerContext) (JSONRPCT (LoggingT IO)) ()
     handleRequest req                 = do
       ctx <- ask
@@ -96,7 +93,7 @@ server = do
     handleInitializeRequest           :: Request -> ReaderT (TVar ServerContext) (JSONRPCT (LoggingT IO)) ()
     handleInitializeRequest req       = do
       ctx <- ask
-      res <- lift . buildResponse (liftIO . atomically . initializeResponseBuilder ctx) $ req
+      res <- lift . buildResponse (flip runReaderT ctx . initializeResponseBuilder) $ req
       maybe (return ()) sendLoggedResponse $ res
 
     handleInitializedNotification     :: Request -> ReaderT (TVar ServerContext) (JSONRPCT (LoggingT IO)) ()
@@ -119,6 +116,3 @@ server = do
       logWithoutLoc (("Server@" `append`) . pack . show $ state) lvl msg
     logServerError = logServer LevelError
     logServerDebug = logServer LevelDebug
-
-main :: IO ()
-main = print "hello"
