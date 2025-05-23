@@ -22,6 +22,10 @@ module Network.MCP.Types
   , ListChangedCapability(..)
   , ListChangedAndSubscriptionCapabilities(..)
 
+
+  , ListToolsRequest(..)
+  , ListToolsResponse(..)
+
   , noCapabilities
 
   , ServerCapabilities(..)
@@ -54,40 +58,6 @@ customOptions = defaultOptions { omitNothingFields = True }
 emptyObj :: Object
 emptyObj = Data.Aeson.KeyMap.empty
 
-data Tool = Tool
-  { name        :: Text
-  , description :: Maybe Text
-  , inputSchema :: InputSchema
-  , annotations :: Maybe ToolAnnotations
-  } deriving(Eq, Generic, Show)
-
-instance FromJSON Tool
-instance ToJSON Tool where
-  toEncoding = genericToEncoding customOptions
-
-data ToolAnnotations = ToolAnnotations
-  { title           :: Text
-  , readOnlyHint    :: Maybe Bool
-  , destructiveHint :: Maybe Bool
-  , idempotentHint  :: Maybe Bool
-  , openWorldHint   :: Maybe Bool
-  } deriving(Eq, Generic, Show)
-
-instance FromJSON ToolAnnotations
-instance ToJSON ToolAnnotations where
-  toEncoding = genericToEncoding customOptions
-
-data InputSchema = InputSchema
-  { properties :: Maybe Object
-  , required   :: Maybe (Vector Text)
-  } deriving(Eq, Generic, Show)
-
-instance FromJSON InputSchema
-instance ToJSON InputSchema where
-  toJSON is = case genericToJSON customOptions is of
-    (Object o) -> Object $ insert "type" "object" o
-    _          -> genericToJSON customOptions is
-
 {-----------------------------------------------------------
 -- requests & responses
 -----------------------------------------------------------}
@@ -96,16 +66,6 @@ data InitializeRequest = InitializeRequest
   { capabilities    :: ClientCapabilities
   , clientInfo      :: Implementation
   } deriving(Eq, Generic, Show)
-
-instance FromRequest InitializeRequest where
-  parseParams = const $ Just parseJSON
-
-instance ToRequest InitializeRequest where
-  requestMethod  = const "initialize"
-  requestIsNotif = const False
-
-instance FromResponse InitializeResponse where
-  parseResult = const $ Just parseJSON
 
 -- the hardcoded protocolVersion seems to trip up
 -- aeson's generics...
@@ -119,6 +79,13 @@ instance ToJSON InitializeRequest where
                     , "capabilities"    .= (genericToJSON customOptions (getField @"capabilities" q))
                     , "clientInfo"      .= (genericToJSON customOptions (clientInfo q))
                     ]
+
+instance FromRequest InitializeRequest where
+  parseParams = const $ Just parseJSON
+
+instance ToRequest InitializeRequest where
+  requestMethod  = const "initialize"
+  requestIsNotif = const False
 
 data InitializeResponse = InitializeResponse
   { capabilities    :: ServerCapabilities
@@ -136,14 +103,62 @@ instance ToJSON InitializeResponse where
     (Object o) -> Object $ insert "capabilities" (genericToJSON customOptions (getField @"capabilities" r))
                          $ insert "serverInfo"   (genericToJSON customOptions (serverInfo r))
                          $ o
+    _          -> genericToJSON customOptions r
+
+instance FromResponse InitializeResponse where
+  parseResult = const $ Just parseJSON
 
 data InitializedNotification = InitializedNotification
 
+methodNotificationsInitialized :: Text
+methodNotificationsInitialized = "notifications/initialized"
+
+instance FromRequest InitializedNotification where
+  parseParams = const $ Just parseJSON
+
+instance ToRequest InitializedNotification where
+  requestMethod  = const methodNotificationsInitialized
+  requestIsNotif = const True
+
 instance FromJSON InitializedNotification where
-  parseJSON (Object o) = o .: "method" >>= (\m -> if m == ("notifications/initialized" :: Text) then return InitializedNotification else mempty)
+  parseJSON (Object o) = o .: "method" >>= (\m -> if m == methodNotificationsInitialized then return InitializedNotification else mempty)
   parseJSON _          = mempty
 instance ToJSON InitializedNotification where
-  toJSON _ = object [ "method" .= ("notifications/initialized" :: Text) ]
+  toJSON _ = object [ "method" .= methodNotificationsInitialized ]
+
+data ListToolsRequest = ListToolsRequest deriving(Eq, Generic, Show)
+
+methodToolsList :: Text
+methodToolsList = "tools/list"
+
+instance FromRequest ListToolsRequest where
+  parseParams = const $ Just parseJSON
+
+instance ToRequest ListToolsRequest where
+  requestMethod  = const methodToolsList
+  requestIsNotif = const False
+
+instance FromJSON ListToolsRequest where
+  parseJSON (Object o) | Data.Aeson.KeyMap.null o = return ListToolsRequest
+                       | otherwise                = mempty
+  parseJSON _          = mempty
+instance ToJSON ListToolsRequest where
+  toJSON _ = Object emptyObj
+
+data ListToolsResponse = ListToolsResponse
+  { tools :: Vector Tool
+  } deriving(Eq, Generic, Show)
+
+instance FromJSON ListToolsResponse
+instance ToJSON ListToolsResponse where
+  toEncoding r = pairs ( "tools" .= getField @"tools" r )
+  toJSON r = case genericToJSON customOptions r of
+    (Object o) -> Object $ insert "tools" (Array $ genericToJSON customOptions <$> (getField @"tools" r))
+                         $ o
+    _          -> genericToJSON customOptions r
+
+instance FromResponse ListToolsResponse where
+  parseResult = const $ Just parseJSON
 
 {-----------------------------------------------------------
 -- plain old data
@@ -208,3 +223,38 @@ data Implementation = Implementation
 instance FromJSON Implementation
 instance ToJSON Implementation where
   toEncoding = genericToEncoding customOptions
+
+data Tool = Tool
+  { name        :: Text
+  , description :: Maybe Text
+  , inputSchema :: InputSchema
+  , annotations :: Maybe ToolAnnotations
+  } deriving(Eq, Generic, Show)
+
+instance FromJSON Tool
+instance ToJSON Tool where
+  toEncoding = genericToEncoding customOptions
+
+data ToolAnnotations = ToolAnnotations
+  { title           :: Text
+  , readOnlyHint    :: Maybe Bool
+  , destructiveHint :: Maybe Bool
+  , idempotentHint  :: Maybe Bool
+  , openWorldHint   :: Maybe Bool
+  } deriving(Eq, Generic, Show)
+
+instance FromJSON ToolAnnotations
+instance ToJSON ToolAnnotations where
+  toEncoding = genericToEncoding customOptions
+
+data InputSchema = InputSchema
+  { properties :: Maybe Object
+  , required   :: Maybe (Vector Text)
+  } deriving(Eq, Generic, Show)
+
+instance FromJSON InputSchema
+instance ToJSON InputSchema where
+  toJSON is = case genericToJSON customOptions is of
+    (Object o) -> Object $ insert "type" "object" o
+    _          -> genericToJSON customOptions is
+

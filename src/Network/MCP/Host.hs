@@ -22,7 +22,8 @@ import Data.Aeson.Text
 import Data.Conduit.Combinators hiding(print)
 import Data.Conduit.Network
 import Data.Text
-import qualified Data.Text.Lazy as TL
+import Data.Text.Lazy hiding(append, pack, Text)
+import Data.Vector
 
 import Network.JSONRPC
 import Network.MCP.Types
@@ -43,7 +44,10 @@ client = jsonrpcTCPClient V2 True (clientSettings 6666 "localhost") $ do
     { capabilities = dummyClientCaps
     , clientInfo   = clientImplementation
     }
-  lift . logWithoutLoc "Client" LevelDebug . TL.toStrict . encodeToLazyText $ (res :: Maybe (Either ErrorObj InitializeResponse))
+  lift . logWithoutLoc "Client" LevelDebug . toStrict . encodeToLazyText $ (res :: Maybe (Either ErrorObj InitializeResponse))
+
+  res2 <- sendRequest $ InitializedNotification
+  lift . logWithoutLoc "Client" LevelDebug . toStrict . encodeToLazyText $ (res2 :: Maybe (Either ErrorObj InitializeResponse))
   return ()
 
 initializeResponseBuilder     :: InitializeRequest -> ReaderT (TVar ServerContext) (JSONRPCT (LoggingT IO)) (Either ErrorObj InitializeResponse)
@@ -62,21 +66,29 @@ initializeResponseBuilder req = do
       , instructions = Nothing
       }
 
+listToolsResponseBuilder     :: ListToolsRequest -> ReaderT (TVar ServerContext) (JSONRPCT (LoggingT IO)) (Either ErrorObj ListToolsResponse)
+listToolsResponseBuilder req = do
+  ctx <- ask
+  ts <- fmap serverTools . liftIO . atomically . readTVar $ ctx
+
+  return . Right $ ListToolsResponse ts
+
 data ServerState = ServerStart | ServerInitializing | ServerInitialized deriving(Eq, Show)
 data ServerContext = ServerContext
   { currentState       :: ServerState
   , clientCapabilities :: Maybe ClientCapabilities
   , serverCapabilities :: ServerCapabilities
+  , serverTools        :: Vector Tool
   } deriving(Eq, Show)
 
-initialState      :: ServerCapabilities -> ServerContext
-initialState caps = ServerContext ServerStart Nothing caps
+initialState         :: ServerCapabilities -> Vector Tool -> ServerContext
+initialState caps ts = ServerContext ServerStart Nothing caps ts
 
-server              :: ServerCapabilities -> (Request -> ReaderT (TVar ServerContext) (JSONRPCT (LoggingT IO)) ()) -> LoggingT IO ()
-server caps handler = do
-  ctx <- liftIO . atomically . newTVar $ initialState caps
+server                 :: ServerCapabilities -> Vector Tool -> (Request -> ReaderT (TVar ServerContext) (JSONRPCT (LoggingT IO)) ()) -> LoggingT IO ()
+server caps ts handler = do
+  ctx <- liftIO . atomically . newTVar $ initialState caps ts
 
-  runJSONRPCT V2 False stdout stdin . (flip runReaderT) ctx $ do
+  runJSONRPCT V2 False stdout stdin . (flip runReaderT) ctx . forever $ do
     req <- lift receiveRequest
     maybe logNothingRequest (liftA2 (>>) logRequest handleRequest) $ req
 
@@ -88,7 +100,8 @@ server caps handler = do
       case state of
         ServerStart        -> handleInitializeRequest req
         ServerInitializing -> handleInitializedNotification req
-        ServerInitialized  -> return ()
+        ServerInitialized  -> case getReqMethod req of
+          methodToolsList -> handleListToolsRequest req
 
     handleInitializeRequest           :: Request -> ReaderT (TVar ServerContext) (JSONRPCT (LoggingT IO)) ()
     handleInitializeRequest req       = do
@@ -99,15 +112,22 @@ server caps handler = do
     handleInitializedNotification     :: Request -> ReaderT (TVar ServerContext) (JSONRPCT (LoggingT IO)) ()
     handleInitializedNotification req = do
       ctx <- ask
-      liftIO . atomically $ modifyTVar ctx (\s -> s { currentState = ServerInitializing })
+      logServerDebug "Initialized."
+      liftIO . atomically $ modifyTVar ctx (\s -> s { currentState = ServerInitialized })
+
+    handleListToolsRequest            :: Request -> ReaderT (TVar ServerContext) (JSONRPCT (LoggingT IO)) ()
+    handleListToolsRequest req        = do
+      ctx <- ask
+      res <- lift . buildResponse (flip runReaderT ctx . listToolsResponseBuilder) $ req
+      maybe (return ()) sendLoggedResponse $ res
 
     sendLoggedResponse                = liftA2 (>>) (lift . sendResponse) logResponse
 
     logNothingRequest                 = logServerError "Received request Nothing."
-    logRequest                        = logServerDebug . ("Received request: " `append`) . TL.toStrict . encodeToLazyText
+    logRequest                        = logServerDebug . ("Received request: " `append`) . toStrict . encodeToLazyText
 
     logResponse                       :: Response -> ReaderT (TVar ServerContext) (JSONRPCT (LoggingT IO)) ()
-    logResponse                       = logServerDebug . ("Handled request: " `append`) . TL.toStrict . encodeToLazyText
+    logResponse                       = logServerDebug . ("Handled request: " `append`) . toStrict . encodeToLazyText
 
     logServer                         :: LogLevel -> Text -> ReaderT (TVar ServerContext) (JSONRPCT (LoggingT IO)) ()
     logServer lvl msg                 = do
