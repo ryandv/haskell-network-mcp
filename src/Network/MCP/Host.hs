@@ -75,6 +75,7 @@ initialState = ServerContext ServerStart Nothing
 server :: LoggingT IO ()
 server = do
   ctx <- liftIO . atomically . newTVar $ initialState
+
   jsonrpcTCPServer V2 False (serverSettings 6666 "*4") $ runReaderT mainLoop ctx
 
   where
