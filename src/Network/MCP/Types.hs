@@ -8,12 +8,16 @@
 {-# LANGUAGE TypeFamilies #-}
 
 module Network.MCP.Types
-  ( ClientCapabilities(..)
+  ( Annotations(..)
+
+  , CallToolResult(..)
+  , CallToolResultContent(..)
+  , ClientCapabilities(..)
 
   , emptyObj
 
   , InitializeRequest(..)
-  , InitializeResponse(..)
+  , InitializeResult(..)
   , InitializedNotification(..)
 
   , Implementation(..)
@@ -22,11 +26,12 @@ module Network.MCP.Types
   , ListChangedCapability(..)
   , ListChangedAndSubscriptionCapabilities(..)
 
-
   , ListToolsRequest(..)
-  , ListToolsResponse(..)
+  , ListToolsResult(..)
 
   , noCapabilities
+
+  , Role(..)
 
   , ServerCapabilities(..)
 
@@ -37,6 +42,9 @@ module Network.MCP.Types
 import qualified Prelude
 
 import Prelude hiding(id)
+
+import Control.Applicative
+import Control.Monad
 
 import Data.Aeson.KeyMap
 import Data.Aeson.Types hiding(Result)
@@ -93,17 +101,18 @@ instance ToRequest InitializeRequest where
   requestIsNotif = const False
 
 {---------------------------------------
--- InitializeResponse
+-- InitializeResult
 ---------------------------------------}
 
-data InitializeResponse = InitializeResponse
+data InitializeResult = InitializeResult
   { capabilities    :: ServerCapabilities
   , serverInfo      :: Implementation
   , instructions    :: Maybe Text
   } deriving(Eq, Generic, Show)
 
-instance FromJSON InitializeResponse
-instance ToJSON InitializeResponse where
+-- TODO: DRY optional instructions field handling
+instance FromJSON InitializeResult
+instance ToJSON InitializeResult where
   toEncoding r = pairs (  "protocolVersion" .= protocolVersion
                        <> "capabilities"    .= getField @"capabilities" r
                        <> "serverInfo"      .= serverInfo r
@@ -116,7 +125,7 @@ instance ToJSON InitializeResponse where
                           ] Prelude.++ (maybe [] (\is -> ["instructions" .= is]) (instructions r)))
     _          -> genericToJSON customOptions r
 
-instance FromResponse InitializeResponse where
+instance FromResponse InitializeResult where
   parseResult = const $ Just (genericParseJSON customOptions)
 
 {---------------------------------------
@@ -164,22 +173,22 @@ instance ToJSON ListToolsRequest where
   toJSON _ = Null
 
 {---------------------------------------
--- ListToolsResponse
+-- ListToolsResult
 ---------------------------------------}
 
-data ListToolsResponse = ListToolsResponse
+data ListToolsResult = ListToolsResult
   { tools :: Vector Tool
   } deriving(Eq, Generic, Show)
 
-instance FromJSON ListToolsResponse
-instance ToJSON ListToolsResponse where
+instance FromJSON ListToolsResult
+instance ToJSON ListToolsResult where
   toEncoding r = pairs ( "tools" .= getField @"tools" r )
   toJSON r = case genericToJSON customOptions r of
     (Object o) -> Object $ insert "tools" (Array $ genericToJSON customOptions <$> (getField @"tools" r))
                          $ o
     _          -> genericToJSON customOptions r
 
-instance FromResponse ListToolsResponse where
+instance FromResponse ListToolsResult where
   parseResult = const $ Just (genericParseJSON customOptions)
 
 {---------------------------------------
@@ -194,16 +203,14 @@ data CallToolRequest = CallToolRequest
 methodToolsCall :: Text
 methodToolsCall = "tools/call"
 
+-- TODO: DRY optional arguments field handling
 instance FromJSON CallToolRequest where
 instance ToJSON CallToolRequest where
-  toEncoding r = pairs (  "protocolVersion" .= protocolVersion
-                       <> "name"            .= getField @"name" r
-                       <> "arguments"       .= getField @"arguments" r
+  toEncoding r = pairs (  "name"         .= getField @"name" r
+                       <> (maybe mempty ("arguments" .=) $ arguments r)
                        )
-  toJSON q = object [ "protocolVersion" .= protocolVersion
-                    , "name"            .= getField @"name" q
-                    , "arguments"       .= genericToJSON customOptions (getField @"arguments" q)
-                    ]
+  toJSON q = object ([ "name"            .= getField @"name" q
+                     ] Prelude.++ (maybe [] (\as -> ["arguments" .= as]) (arguments q)))
 
 instance FromRequest CallToolRequest where
   parseParams = const $ Just (genericParseJSON customOptions)
@@ -213,30 +220,70 @@ instance ToRequest CallToolRequest where
   requestIsNotif = const False
 
 {---------------------------------------
--- CallToolResponse
-
-data CallToolResponse = CallToolResponse
-  { capabilities    :: ServerCapabilities
-  , serverInfo      :: Implementation
-  , instructions    :: Maybe Text
-  } deriving(Eq, Generic, Show)
-
-instance FromJSON CallToolResponse
-instance ToJSON CallToolResponse where
-  toEncoding r = pairs (  "capabilities" .= getField @"capabilities" r
-                       <> "serverInfo"   .= serverInfo r
-                       <> "instructions" .= instructions r
-                       )
-  toJSON r = case genericToJSON customOptions r of
-    (Object o) -> Object $ insert "capabilities" (genericToJSON customOptions (getField @"capabilities" r))
-                         $ insert "serverInfo"   (genericToJSON customOptions (serverInfo r))
-                         $ o
-    _          -> genericToJSON customOptions r
-
-instance FromResponse CallToolResponse where
-  parseResult = const $ Just parseJSON
+-- CallToolResult
 ---------------------------------------}
 
+data EmbeddedResourceContents = TextResourceContents Text | BlobResourceContents Text deriving(Eq, Generic, Show)
+
+instance FromJSON EmbeddedResourceContents where
+  parseJSON (Object o) | member "text" o = TextResourceContents <$> o .: "text"
+                       | member "blob" o = BlobResourceContents <$> o .: "blob"
+                       | otherwise = mempty
+  parseJSON _ = mempty
+
+instance ToJSON EmbeddedResourceContents where
+  toJSON (TextResourceContents t) = object [ "text" .= t ]
+  toJSON (BlobResourceContents b) = object [ "blob" .= b ]
+
+-- TODO: DRY optional annotations field handling
+data CallToolResultContent =
+  TextContent Text (Maybe Annotations)
+  | ImageContent Text Text (Maybe Annotations)
+  | AudioContent Text Text (Maybe Annotations)
+  | EmbeddedResource EmbeddedResourceContents (Maybe Annotations) deriving(Eq, Generic, Show)
+
+-- horrendous
+instance FromJSON CallToolResultContent where
+  parseJSON (Object o) =
+    (o .: "type" >>=     (\t -> (guard $ (t == ("text" :: Text)))     >> TextContent      <$> o .: "text"     <*>                     (o .: "annotations" <|> return Nothing)))
+    <|> (o .: "type" >>= (\t -> (guard $ (t == ("image" :: Text)))    >> ImageContent     <$> o .: "data"     <*> o .: "mimeType" <*> (o .: "annotations" <|> return Nothing)))
+    <|> (o .: "type" >>= (\t -> (guard $ (t == ("audio" :: Text)))    >> AudioContent     <$> o .: "data"     <*> o .: "mimeType" <*> (o .: "annotations" <|> return Nothing)))
+    <|> (o .: "type" >>= (\t -> (guard $ (t == ("resource" :: Text))) >> EmbeddedResource <$> o .: "resource" <*>                     (o .: "annotations" <|> return Nothing)))
+  parseJSON _          = mempty
+
+instance ToJSON CallToolResultContent where
+  toJSON (TextContent txt as)         = object ([ "type"        .= ("text" :: Text)
+                                                , "text"        .= txt
+                                                ] Prelude.++ (maybe [] (\a -> ["annotations" .= a]) as))
+  toJSON (ImageContent d mimeType as) = object ([ "type"        .= ("image" :: Text)
+                                                , "data"        .= d
+                                                , "mimeType"    .= mimeType
+                                                ] Prelude.++ (maybe [] (\a -> ["annotations" .= a]) as))
+  toJSON (AudioContent d mimeType as) = object ([ "type"        .= ("audio" :: Text)
+                                                , "data"        .= d
+                                                , "mimeType"    .= mimeType
+                                                ] Prelude.++ (maybe [] (\a -> ["annotations" .= a]) as))
+  toJSON (EmbeddedResource c as)      = object ([ "type"        .= ("resource" :: Text)
+                                                , "resource"    .= c
+                                                ] Prelude.++ (maybe [] (\a -> ["annotations" .= a]) as))
+data CallToolResult = CallToolResult
+  { content         :: Vector CallToolResultContent
+  , isError         :: Maybe Bool
+  } deriving(Eq, Generic, Show)
+
+-- TODO: DRY optional isError field handling
+instance FromJSON CallToolResult
+instance ToJSON CallToolResult where
+  toEncoding r = pairs (  "content"    .= getField @"content" r
+                       <> (maybe mempty ("isError" .=) $ isError r)
+                       )
+  toJSON r = case genericToJSON customOptions r of
+    (Object o) -> object ([ "content" .= getField @"content" r
+                          ] Prelude.++ (maybe [] (\b -> ["isError" .= b]) (isError r)))
+    _          -> genericToJSON customOptions r
+
+instance FromResponse CallToolResult where
+  parseResult = const $ Just (genericParseJSON customOptions)
 
 {-----------------------------------------------------------
 -- plain old data
@@ -336,3 +383,21 @@ instance ToJSON InputSchema where
     (Object o) -> Object $ insert "type" "object" o
     _          -> genericToJSON customOptions is
 
+data Role = User | Assistant deriving(Eq, Generic, Show)
+
+instance FromJSON Role where
+  parseJSON (String "user")      = return User
+  parseJSON (String "assistant") = return Assistant
+  parseJSON _ = mempty
+instance ToJSON Role where
+  toJSON User = String "user"
+  toJSON _    = String "assistant"
+
+data Annotations = Annotations
+  { audience :: Maybe (Vector Role)
+  , priority :: Maybe Int
+  } deriving(Eq, Generic, Show)
+
+instance FromJSON Annotations
+instance ToJSON Annotations where
+  toEncoding = genericToEncoding customOptions

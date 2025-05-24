@@ -44,14 +44,14 @@ client = jsonrpcTCPClient V2 True (clientSettings 6666 "localhost") $ do
     { capabilities = dummyClientCaps
     , clientInfo   = clientImplementation
     }
-  lift . logWithoutLoc "Client" LevelDebug . toStrict . encodeToLazyText $ (res :: Maybe (Either ErrorObj InitializeResponse))
+  lift . logWithoutLoc "Client" LevelDebug . toStrict . encodeToLazyText $ (res :: Maybe (Either ErrorObj InitializeResult))
 
   res2 <- sendRequest $ InitializedNotification
-  lift . logWithoutLoc "Client" LevelDebug . toStrict . encodeToLazyText $ (res2 :: Maybe (Either ErrorObj InitializeResponse))
+  lift . logWithoutLoc "Client" LevelDebug . toStrict . encodeToLazyText $ (res2 :: Maybe (Either ErrorObj InitializeResult))
   return ()
 
-initializeResponseBuilder     :: InitializeRequest -> ReaderT (TVar ServerContext) (JSONRPCT (LoggingT IO)) (Either ErrorObj InitializeResponse)
-initializeResponseBuilder req = do
+initializeResultBuilder     :: InitializeRequest -> ReaderT (TVar ServerContext) (JSONRPCT (LoggingT IO)) (Either ErrorObj InitializeResult)
+initializeResultBuilder req = do
   ctx <- ask
   liftIO . atomically $ do
     serverCaps <- fmap serverCapabilities . readTVar $ ctx
@@ -60,18 +60,18 @@ initializeResponseBuilder req = do
                             , currentState       = ServerInitializing
                             })
 
-    return . Right $ InitializeResponse
+    return . Right $ InitializeResult
       { capabilities = serverCaps
       , serverInfo   = Implementation "haskell-network-mcp" "v0.0.1"
       , instructions = Nothing
       }
 
-listToolsResponseBuilder     :: ListToolsRequest -> ReaderT (TVar ServerContext) (JSONRPCT (LoggingT IO)) (Either ErrorObj ListToolsResponse)
-listToolsResponseBuilder req = do
+listToolsResultBuilder     :: ListToolsRequest -> ReaderT (TVar ServerContext) (JSONRPCT (LoggingT IO)) (Either ErrorObj ListToolsResult)
+listToolsResultBuilder req = do
   ctx <- ask
   ts <- fmap serverTools . liftIO . atomically . readTVar $ ctx
 
-  return . Right $ ListToolsResponse ts
+  return . Right $ ListToolsResult ts
 
 data ServerState = ServerStart | ServerInitializing | ServerInitialized deriving(Eq, Show)
 data ServerContext = ServerContext
@@ -106,7 +106,7 @@ server caps ts handler = do
     handleInitializeRequest           :: Request -> ReaderT (TVar ServerContext) (JSONRPCT (LoggingT IO)) ()
     handleInitializeRequest req       = do
       ctx <- ask
-      res <- lift . buildResponse (flip runReaderT ctx . initializeResponseBuilder) $ req
+      res <- lift . buildResponse (flip runReaderT ctx . initializeResultBuilder) $ req
       maybe (return ()) sendLoggedResponse $ res
 
     handleInitializedNotification     :: Request -> ReaderT (TVar ServerContext) (JSONRPCT (LoggingT IO)) ()
@@ -118,7 +118,7 @@ server caps ts handler = do
     handleListToolsRequest            :: Request -> ReaderT (TVar ServerContext) (JSONRPCT (LoggingT IO)) ()
     handleListToolsRequest req        = do
       ctx <- ask
-      res <- lift . buildResponse (flip runReaderT ctx . listToolsResponseBuilder) $ req
+      res <- lift . buildResponse (flip runReaderT ctx . listToolsResultBuilder) $ req
       maybe (return ()) sendLoggedResponse $ res
 
     sendLoggedResponse                = liftA2 (>>) (lift . sendResponse) logResponse

@@ -62,4 +62,5 @@ test-suite haskell-network-mcp-test
     , hspec ==2.11.12
     , json-rpc ==1.1.2
     , text ==2.1.1
+    , vector ==0.13.2.0
   default-language: Haskell2010

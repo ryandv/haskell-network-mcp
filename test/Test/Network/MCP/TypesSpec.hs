@@ -7,6 +7,7 @@ import Data.Aeson
 import Data.Aeson.Text
 import qualified Data.ByteString.Lazy.Char8 as C
 import qualified Data.Text.Lazy as TL
+import qualified Data.Vector as V
 
 import Network.MCP.Types
 import Network.JSONRPC
@@ -37,6 +38,11 @@ spec = context "json marshalling" $ do
       C.unpack json `shouldNotContain` "sampling"
       jsonText      `shouldNotContain` "roots"
       jsonText      `shouldNotContain` "sampling"
+      -- the rpcWrapped examples will fail when using generics
+      -- presumably because of how the underlying payload is
+      -- wrapped by Network.JSONRPC's Request/Response types;
+      -- something is causing omitNothingFields to not be
+      -- respected
       rpcWrapped    `shouldNotContain` "roots"
       rpcWrapped    `shouldNotContain` "sampling"
 
@@ -49,14 +55,14 @@ spec = context "json marshalling" $ do
     it "decodes" $ do
       decode marshalled `shouldBe` Just subject
 
-  describe "InitializeResponse encoding" $ do
+  describe "InitializeResult encoding" $ do
     let serverCaps = ServerCapabilities Nothing Nothing Nothing Nothing Nothing
     let clientCaps = ClientCapabilities Nothing Nothing
-    let subject    = InitializeResponse serverCaps implementation Nothing
+    let subject    = InitializeResult serverCaps implementation Nothing
 
     let json       = encode subject
     let jsonText   = TL.unpack $ encodeToLazyText subject
-    res            <- buildResponse ((const (return . Right $ subject)) :: (Monad m) => InitializeRequest -> m (Either ErrorObj InitializeResponse)) $ buildRequest V2 (InitializeRequest clientCaps implementation) (IdInt 1)
+    res            <- buildResponse ((const (return . Right $ subject)) :: (Monad m) => InitializeRequest -> m (Either ErrorObj InitializeResult)) $ buildRequest V2 (InitializeRequest clientCaps implementation) (IdInt 1)
     let rpcWrapped = TL.unpack $ encodeToLazyText $ res
 
     it "includes a protocolVersion" $ do
@@ -89,10 +95,10 @@ spec = context "json marshalling" $ do
 
       rpcWrapped `shouldNotContain` "instructions"
 
-  describe "InitializeResponse decoding" $ do
+  describe "InitializeResult decoding" $ do
     let serverCaps = ServerCapabilities Nothing Nothing Nothing Nothing Nothing
     let clientCaps = ClientCapabilities Nothing Nothing
-    let subject    = InitializeResponse serverCaps implementation Nothing
+    let subject    = InitializeResult serverCaps implementation Nothing
 
     let marshalled = "{\"capabilities\":{},\"protocolVersion\":\"2025-03-26\",\"serverInfo\":{\"name\":\"haskell-network-mcp-test\",\"version\":\"v0.0.0.1\"}}"
 
@@ -106,3 +112,38 @@ spec = context "json marshalling" $ do
       let jsonText   = TL.unpack $ encodeToLazyText subject
       C.unpack json `shouldBe` "null"
       jsonText `shouldBe` "null"
+
+  describe "CallToolResult encoding" $ do
+
+    context "CallToolResult proper" $ do
+      it "encodes" $ do
+        let subject = CallToolResult (V.singleton (TextContent "hello world" Nothing)) Nothing
+        let json = encode subject
+        C.unpack json `shouldBe` "{\"content\":[{\"text\":\"hello world\",\"type\":\"text\"}]}"
+      it "encodes errors" $ do
+        let subject = CallToolResult (V.singleton (TextContent "hello world" Nothing)) (Just True)
+        let json = encode subject
+        C.unpack json `shouldBe` "{\"content\":[{\"text\":\"hello world\",\"type\":\"text\"}],\"isError\":true}"
+
+    context "CallToolResultContent" $ do
+      it "encodes TextContent" $ do
+        let subject = TextContent "hello world" (Just $ Annotations (Just $ V.fromList [User]) (Just 42))
+        let json    = encode subject
+        C.unpack json `shouldBe` "{\"annotations\":{\"audience\":[\"user\"],\"priority\":42},\"text\":\"hello world\",\"type\":\"text\"}"
+
+      it "encodes TextContent without annotations" $ do
+        let subject = TextContent "hello world" Nothing
+        let json    = encode subject
+        C.unpack json `shouldBe` "{\"text\":\"hello world\",\"type\":\"text\"}"
+
+  describe "CallToolResult decoding" $ do
+    context "CallToolResultContent" $ do
+      it "decodes TextContent" $ do
+        let subject = TextContent "hello world" (Just $ Annotations (Just $ V.fromList [User]) (Just 42))
+        let marshalled = "{\"annotations\":{\"audience\":[\"user\"],\"priority\":42},\"text\":\"hello world\",\"type\":\"text\"}"
+        decode marshalled `shouldBe` Just subject
+
+      it "decodes TextContent without annotations" $ do
+        let subject = TextContent "hello world" Nothing
+        let marshalled = "{\"text\":\"hello world\",\"type\":\"text\"}"
+        decode marshalled `shouldBe` Just subject
