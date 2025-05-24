@@ -54,4 +54,9 @@ tests:
     - -rtsopts
     - -with-rtsopts=-N
     dependencies:
+    - aeson == 2.2.3.0
+    - bytestring == 0.12.1.0
     - haskell-network-mcp
+    - hspec == 2.11.12
+    - json-rpc == 1.1.2
+    - text == 2.1.1

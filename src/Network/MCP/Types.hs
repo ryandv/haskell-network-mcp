@@ -62,13 +62,18 @@ emptyObj = Data.Aeson.KeyMap.empty
 -- requests & responses
 -----------------------------------------------------------}
 
+{---------------------------------------
+-- InitializeRequest
+---------------------------------------}
+
 data InitializeRequest = InitializeRequest
   { capabilities    :: ClientCapabilities
   , clientInfo      :: Implementation
   } deriving(Eq, Generic, Show)
 
--- the hardcoded protocolVersion seems to trip up
--- aeson's generics...
+methodInitialize :: Text
+methodInitialize = "initialize"
+
 instance FromJSON InitializeRequest
 instance ToJSON InitializeRequest where
   toEncoding q = pairs (  "protocolVersion" .= protocolVersion
@@ -81,11 +86,15 @@ instance ToJSON InitializeRequest where
                     ]
 
 instance FromRequest InitializeRequest where
-  parseParams = const $ Just parseJSON
+  parseParams = const $ Just (genericParseJSON customOptions)
 
 instance ToRequest InitializeRequest where
-  requestMethod  = const "initialize"
+  requestMethod  = const methodInitialize
   requestIsNotif = const False
+
+{---------------------------------------
+-- InitializeResponse
+---------------------------------------}
 
 data InitializeResponse = InitializeResponse
   { capabilities    :: ServerCapabilities
@@ -95,36 +104,46 @@ data InitializeResponse = InitializeResponse
 
 instance FromJSON InitializeResponse
 instance ToJSON InitializeResponse where
-  toEncoding r = pairs (  "capabilities" .= getField @"capabilities" r
-                       <> "serverInfo"   .= serverInfo r
-                       <> "instructions" .= instructions r
+  toEncoding r = pairs (  "protocolVersion" .= protocolVersion
+                       <> "capabilities"    .= getField @"capabilities" r
+                       <> "serverInfo"      .= serverInfo r
+                       <> (maybe mempty ("instructions" .=) $ instructions r)
                        )
   toJSON r = case genericToJSON customOptions r of
-    (Object o) -> Object $ insert "capabilities" (genericToJSON customOptions (getField @"capabilities" r))
-                         $ insert "serverInfo"   (genericToJSON customOptions (serverInfo r))
-                         $ o
+    (Object o) -> object ([ "protocolVersion" .= protocolVersion
+                          , "capabilities"    .= (genericToJSON customOptions (getField @"capabilities" r))
+                          , "serverInfo"      .= (genericToJSON customOptions (serverInfo r))
+                          ] Prelude.++ (maybe [] (\is -> ["instructions" .= is]) (instructions r)))
     _          -> genericToJSON customOptions r
 
 instance FromResponse InitializeResponse where
-  parseResult = const $ Just parseJSON
+  parseResult = const $ Just (genericParseJSON customOptions)
 
-data InitializedNotification = InitializedNotification
+{---------------------------------------
+-- InitializedNotification
+---------------------------------------}
+
+data InitializedNotification = InitializedNotification deriving(Eq, Generic, Show)
 
 methodNotificationsInitialized :: Text
 methodNotificationsInitialized = "notifications/initialized"
 
 instance FromRequest InitializedNotification where
-  parseParams = const $ Just parseJSON
+  parseParams = const $ Just (genericParseJSON customOptions)
 
 instance ToRequest InitializedNotification where
   requestMethod  = const methodNotificationsInitialized
   requestIsNotif = const True
 
 instance FromJSON InitializedNotification where
-  parseJSON (Object o) = o .: "method" >>= (\m -> if m == methodNotificationsInitialized then return InitializedNotification else mempty)
+  parseJSON Null       = return InitializedNotification
   parseJSON _          = mempty
 instance ToJSON InitializedNotification where
-  toJSON _ = object [ "method" .= methodNotificationsInitialized ]
+  toJSON _ = Null
+
+{---------------------------------------
+-- ListToolsRequest
+---------------------------------------}
 
 data ListToolsRequest = ListToolsRequest deriving(Eq, Generic, Show)
 
@@ -139,11 +158,14 @@ instance ToRequest ListToolsRequest where
   requestIsNotif = const False
 
 instance FromJSON ListToolsRequest where
-  parseJSON (Object o) | Data.Aeson.KeyMap.null o = return ListToolsRequest
-                       | otherwise                = mempty
+  parseJSON Null       = return ListToolsRequest
   parseJSON _          = mempty
 instance ToJSON ListToolsRequest where
-  toJSON _ = Object emptyObj
+  toJSON _ = Null
+
+{---------------------------------------
+-- ListToolsResponse
+---------------------------------------}
 
 data ListToolsResponse = ListToolsResponse
   { tools :: Vector Tool
@@ -158,7 +180,63 @@ instance ToJSON ListToolsResponse where
     _          -> genericToJSON customOptions r
 
 instance FromResponse ListToolsResponse where
+  parseResult = const $ Just (genericParseJSON customOptions)
+
+{---------------------------------------
+-- CallToolRequest
+---------------------------------------}
+
+data CallToolRequest = CallToolRequest
+  { name      :: Text
+  , arguments :: Maybe Object
+  } deriving(Eq, Generic, Show)
+
+methodToolsCall :: Text
+methodToolsCall = "tools/call"
+
+instance FromJSON CallToolRequest where
+instance ToJSON CallToolRequest where
+  toEncoding r = pairs (  "protocolVersion" .= protocolVersion
+                       <> "name"            .= getField @"name" r
+                       <> "arguments"       .= getField @"arguments" r
+                       )
+  toJSON q = object [ "protocolVersion" .= protocolVersion
+                    , "name"            .= getField @"name" q
+                    , "arguments"       .= genericToJSON customOptions (getField @"arguments" q)
+                    ]
+
+instance FromRequest CallToolRequest where
+  parseParams = const $ Just (genericParseJSON customOptions)
+
+instance ToRequest CallToolRequest where
+  requestMethod  = const methodToolsCall
+  requestIsNotif = const False
+
+{---------------------------------------
+-- CallToolResponse
+
+data CallToolResponse = CallToolResponse
+  { capabilities    :: ServerCapabilities
+  , serverInfo      :: Implementation
+  , instructions    :: Maybe Text
+  } deriving(Eq, Generic, Show)
+
+instance FromJSON CallToolResponse
+instance ToJSON CallToolResponse where
+  toEncoding r = pairs (  "capabilities" .= getField @"capabilities" r
+                       <> "serverInfo"   .= serverInfo r
+                       <> "instructions" .= instructions r
+                       )
+  toJSON r = case genericToJSON customOptions r of
+    (Object o) -> Object $ insert "capabilities" (genericToJSON customOptions (getField @"capabilities" r))
+                         $ insert "serverInfo"   (genericToJSON customOptions (serverInfo r))
+                         $ o
+    _          -> genericToJSON customOptions r
+
+instance FromResponse CallToolResponse where
   parseResult = const $ Just parseJSON
+---------------------------------------}
+
 
 {-----------------------------------------------------------
 -- plain old data
