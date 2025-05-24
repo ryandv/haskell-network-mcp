@@ -7,6 +7,7 @@ module Network.MCP.Host where
 
 import Control.Concurrent.STM.TVar
 
+import Control.Applicative
 import Control.Monad
 import Control.Monad.STM
 import Control.Monad.Trans.Class
@@ -88,11 +89,13 @@ server                 :: ServerCapabilities -> Vector Tool -> (Request -> Reade
 server caps ts handler = do
   ctx <- liftIO . atomically . newTVar $ initialState caps ts
 
-  runJSONRPCT V2 False stdout stdin . (flip runReaderT) ctx . forever $ do
-    req <- lift receiveRequest
-    maybe logNothingRequest (liftA2 (>>) logRequest handleRequest) $ req
+  runJSONRPCT V2 False stdout stdin . (flip runReaderT) ctx $ (forever serverLoop) <|> return ()
 
   where
+    serverLoop :: ReaderT (TVar ServerContext) (JSONRPCT (LoggingT IO)) ()
+    serverLoop = lift receiveRequest >>= maybe (logNothingRequest >> shutdown)
+                                               (liftA2 (>>) logRequest handleRequest)
+
     handleRequest                     :: Request -> ReaderT (TVar ServerContext) (JSONRPCT (LoggingT IO)) ()
     handleRequest req                 = do
       ctx <- ask
@@ -123,7 +126,7 @@ server caps ts handler = do
 
     sendLoggedResponse                = liftA2 (>>) (lift . sendResponse) logResponse
 
-    logNothingRequest                 = logServerError "Received request Nothing."
+    logNothingRequest                 = logServerWarn "Stream empty."
     logRequest                        = logServerDebug . ("Received request: " `append`) . toStrict . encodeToLazyText
 
     logResponse                       :: Response -> ReaderT (TVar ServerContext) (JSONRPCT (LoggingT IO)) ()
@@ -136,3 +139,6 @@ server caps ts handler = do
       logWithoutLoc (("Server@" `append`) . pack . show $ state) lvl msg
     logServerError = logServer LevelError
     logServerDebug = logServer LevelDebug
+    logServerWarn  = logServer LevelWarn
+
+    shutdown = fail "Shutting down."
