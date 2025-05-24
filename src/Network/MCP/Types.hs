@@ -10,6 +10,7 @@
 module Network.MCP.Types
   ( Annotations(..)
 
+  , CallToolRequest(..)
   , CallToolResult(..)
   , CallToolResultContent(..)
   , ClientCapabilities(..)
@@ -110,19 +111,18 @@ data InitializeResult = InitializeResult
   , instructions    :: Maybe Text
   } deriving(Eq, Generic, Show)
 
--- TODO: DRY optional instructions field handling
 instance FromJSON InitializeResult
 instance ToJSON InitializeResult where
   toEncoding r = pairs (  "protocolVersion" .= protocolVersion
                        <> "capabilities"    .= getField @"capabilities" r
                        <> "serverInfo"      .= serverInfo r
-                       <> (maybe mempty ("instructions" .=) $ instructions r)
+                       <> (optionalSeries "instructions" $ instructions r)
                        )
   toJSON r = case genericToJSON customOptions r of
     (Object o) -> object ([ "protocolVersion" .= protocolVersion
                           , "capabilities"    .= (genericToJSON customOptions (getField @"capabilities" r))
                           , "serverInfo"      .= (genericToJSON customOptions (serverInfo r))
-                          ] Prelude.++ (maybe [] (\is -> ["instructions" .= is]) (instructions r)))
+                          ] Prelude.++ (optionalPair "instructions" (instructions r)))
     _          -> genericToJSON customOptions r
 
 instance FromResponse InitializeResult where
@@ -203,14 +203,13 @@ data CallToolRequest = CallToolRequest
 methodToolsCall :: Text
 methodToolsCall = "tools/call"
 
--- TODO: DRY optional arguments field handling
 instance FromJSON CallToolRequest where
 instance ToJSON CallToolRequest where
   toEncoding r = pairs (  "name"         .= getField @"name" r
-                       <> (maybe mempty ("arguments" .=) $ arguments r)
+                       <> (optionalSeries "arguments" $ arguments r)
                        )
   toJSON q = object ([ "name"            .= getField @"name" q
-                     ] Prelude.++ (maybe [] (\as -> ["arguments" .= as]) (arguments q)))
+                     ] Prelude.++ (optionalPair "arguments" (arguments q)))
 
 instance FromRequest CallToolRequest where
   parseParams = const $ Just (genericParseJSON customOptions)
@@ -235,7 +234,6 @@ instance ToJSON EmbeddedResourceContents where
   toJSON (TextResourceContents t) = object [ "text" .= t ]
   toJSON (BlobResourceContents b) = object [ "blob" .= b ]
 
--- TODO: DRY optional annotations field handling
 data CallToolResultContent =
   TextContent Text (Maybe Annotations)
   | ImageContent Text Text (Maybe Annotations)
@@ -252,34 +250,52 @@ instance FromJSON CallToolResultContent where
   parseJSON _          = mempty
 
 instance ToJSON CallToolResultContent where
+  toEncoding (TextContent txt as)         = pairs (  "type"        .= ("text" :: Text)
+                                                  <> "text"        .= txt
+                                                  <> (optionalSeries "annotations" as)
+                                                  )
+  toEncoding (ImageContent d mimeType as) = pairs (  "type"        .= ("image" :: Text)
+                                                  <> "data"        .= d
+                                                  <> "mimeType"    .= mimeType
+                                                  <> (optionalSeries "annotations" as)
+                                                  )
+  toEncoding (AudioContent d mimeType as) = pairs (  "type"        .= ("audio" :: Text)
+                                                  <> "data"        .= d
+                                                  <> "mimeType"    .= mimeType
+                                                  <> (optionalSeries "annotations" as)
+                                                  )
+  toEncoding (EmbeddedResource c as)      = pairs (  "type"        .= ("resource" :: Text)
+                                                  <> "resource"    .= c
+                                                  <> (optionalSeries "annotations" as)
+                                                  )
+
   toJSON (TextContent txt as)         = object ([ "type"        .= ("text" :: Text)
                                                 , "text"        .= txt
-                                                ] Prelude.++ (maybe [] (\a -> ["annotations" .= a]) as))
+                                                ] Prelude.++ (optionalPair "annotations" as))
   toJSON (ImageContent d mimeType as) = object ([ "type"        .= ("image" :: Text)
                                                 , "data"        .= d
                                                 , "mimeType"    .= mimeType
-                                                ] Prelude.++ (maybe [] (\a -> ["annotations" .= a]) as))
+                                                ] Prelude.++ (optionalPair "annotations" as))
   toJSON (AudioContent d mimeType as) = object ([ "type"        .= ("audio" :: Text)
                                                 , "data"        .= d
                                                 , "mimeType"    .= mimeType
-                                                ] Prelude.++ (maybe [] (\a -> ["annotations" .= a]) as))
+                                                ] Prelude.++ (optionalPair "annotations" as))
   toJSON (EmbeddedResource c as)      = object ([ "type"        .= ("resource" :: Text)
                                                 , "resource"    .= c
-                                                ] Prelude.++ (maybe [] (\a -> ["annotations" .= a]) as))
+                                                ] Prelude.++ (optionalPair "annotations" as))
 data CallToolResult = CallToolResult
   { content         :: Vector CallToolResultContent
   , isError         :: Maybe Bool
   } deriving(Eq, Generic, Show)
 
--- TODO: DRY optional isError field handling
 instance FromJSON CallToolResult
 instance ToJSON CallToolResult where
   toEncoding r = pairs (  "content"    .= getField @"content" r
-                       <> (maybe mempty ("isError" .=) $ isError r)
+                       <> (optionalSeries "isError" $ isError r)
                        )
   toJSON r = case genericToJSON customOptions r of
     (Object o) -> object ([ "content" .= getField @"content" r
-                          ] Prelude.++ (maybe [] (\b -> ["isError" .= b]) (isError r)))
+                          ] Prelude.++ (optionalPair "isError" (isError r)))
     _          -> genericToJSON customOptions r
 
 instance FromResponse CallToolResult where
@@ -401,3 +417,13 @@ data Annotations = Annotations
 instance FromJSON Annotations
 instance ToJSON Annotations where
   toEncoding = genericToEncoding customOptions
+
+{-----------------------------------------------------------
+-- utilities
+-----------------------------------------------------------}
+
+optionalSeries :: (ToJSON a) => Key -> Maybe a -> Series
+optionalSeries = maybe mempty . (.=)
+
+optionalPair      :: (ToJSON a) => Key -> Maybe a -> [Pair]
+optionalPair k mv = maybe [] (\v -> [k .= v]) mv

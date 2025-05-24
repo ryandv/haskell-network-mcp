@@ -5,6 +5,7 @@ import Control.Monad.IO.Class
 
 import Data.Aeson
 import Data.Aeson.Text
+import qualified Data.Aeson.KeyMap as M
 import qualified Data.ByteString.Lazy.Char8 as C
 import qualified Data.Text.Lazy as TL
 import qualified Data.Vector as V
@@ -38,11 +39,11 @@ spec = context "json marshalling" $ do
       C.unpack json `shouldNotContain` "sampling"
       jsonText      `shouldNotContain` "roots"
       jsonText      `shouldNotContain` "sampling"
-      -- the rpcWrapped examples will fail when using generics
-      -- presumably because of how the underlying payload is
-      -- wrapped by Network.JSONRPC's Request/Response types;
-      -- something is causing omitNothingFields to not be
-      -- respected
+      -- [0] the rpcWrapped examples will fail when using
+      -- generics presumably because of how the underlying
+      -- payload is wrapped by Network.JSONRPC's
+      -- Request/Response types; something is causing
+      -- omitNothingFields to not be respected
       rpcWrapped    `shouldNotContain` "roots"
       rpcWrapped    `shouldNotContain` "sampling"
 
@@ -87,6 +88,7 @@ spec = context "json marshalling" $ do
 
       jsonText `shouldNotContain` "instructions"
 
+      -- see [0] above re. omitNothingFields
       rpcWrapped `shouldNotContain` "logging"
       rpcWrapped `shouldNotContain` "completions"
       rpcWrapped `shouldNotContain` "prompts"
@@ -113,28 +115,102 @@ spec = context "json marshalling" $ do
       C.unpack json `shouldBe` "null"
       jsonText `shouldBe` "null"
 
-  describe "CallToolResult encoding" $ do
+  describe "CallToolRequest encoding" $ do
+    it "encodes" $ do
+      let subject = CallToolRequest "foobar" Nothing
 
+      let json = encode subject
+      let jsonText = TL.unpack $ encodeToLazyText subject
+      let req = buildRequest V2 subject (IdInt 1)
+      let rpcWrapped = TL.unpack $ encodeToLazyText req
+
+      C.unpack json `shouldBe` "{\"name\":\"foobar\"}"
+      jsonText      `shouldBe` "{\"name\":\"foobar\"}"
+      -- see [0] above re. omitNothingFields
+      rpcWrapped    `shouldBe` "{\"id\":1,\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"foobar\"}}"
+
+    it "encodes optional arguments" $ do
+      let subject = CallToolRequest "foobar" (Just $ M.fromList [("foo", "bar")])
+      let json = encode subject
+      C.unpack json `shouldBe` "{\"name\":\"foobar\",\"arguments\":{\"foo\":\"bar\"}}"
+
+  describe "CallToolResult encoding" $ do
     context "CallToolResult proper" $ do
       it "encodes" $ do
-        let subject = CallToolResult (V.singleton (TextContent "hello world" Nothing)) Nothing
-        let json = encode subject
-        C.unpack json `shouldBe` "{\"content\":[{\"text\":\"hello world\",\"type\":\"text\"}]}"
+        let subject    = CallToolResult (V.singleton (TextContent "hello world" Nothing)) Nothing
+
+        let json       = encode subject
+        let jsonText   = TL.unpack $ encodeToLazyText subject
+        res            <- buildResponse ((const (return . Right $ subject)) :: (Monad m) => CallToolRequest -> m (Either ErrorObj CallToolResult)) $ buildRequest V2 (CallToolRequest "foobar" Nothing) (IdInt 1)
+        let rpcWrapped = TL.unpack $ encodeToLazyText res
+
+        C.unpack json `shouldContain` "\"text\":\"hello world\""
+        jsonText      `shouldContain` "\"text\":\"hello world\""
+        rpcWrapped    `shouldContain` "\"text\":\"hello world\""
+
+        C.unpack json `shouldContain` "\"type\":\"text\""
+        jsonText      `shouldContain` "\"type\":\"text\""
+        rpcWrapped    `shouldContain` "\"type\":\"text\""
+
+        C.unpack json `shouldNotContain` "\"isError\""
+        jsonText      `shouldNotContain` "\"isError\""
+        rpcWrapped    `shouldNotContain` "\"isError\""
       it "encodes errors" $ do
         let subject = CallToolResult (V.singleton (TextContent "hello world" Nothing)) (Just True)
+
         let json = encode subject
-        C.unpack json `shouldBe` "{\"content\":[{\"text\":\"hello world\",\"type\":\"text\"}],\"isError\":true}"
+        let jsonText   = TL.unpack $ encodeToLazyText subject
+        res            <- buildResponse ((const (return . Right $ subject)) :: (Monad m) => CallToolRequest -> m (Either ErrorObj CallToolResult)) $ buildRequest V2 (CallToolRequest "foobar" Nothing) (IdInt 1)
+        let rpcWrapped = TL.unpack $ encodeToLazyText res
+
+        C.unpack json `shouldContain` "\"isError\":true"
+        jsonText      `shouldContain` "\"isError\":true"
+        rpcWrapped    `shouldContain` "\"isError\":true"
 
     context "CallToolResultContent" $ do
       it "encodes TextContent" $ do
         let subject = TextContent "hello world" (Just $ Annotations (Just $ V.fromList [User]) (Just 42))
-        let json    = encode subject
-        C.unpack json `shouldBe` "{\"annotations\":{\"audience\":[\"user\"],\"priority\":42},\"text\":\"hello world\",\"type\":\"text\"}"
+
+        let json       = encode subject
+        let jsonText   = TL.unpack $ encodeToLazyText subject
+        res            <- buildResponse ((const (return . Right $ CallToolResult (V.singleton subject) Nothing)) :: (Monad m) => CallToolRequest -> m (Either ErrorObj CallToolResult)) $ buildRequest V2 (CallToolRequest "foobar" Nothing) (IdInt 1)
+        let rpcWrapped = TL.unpack $ encodeToLazyText res
+
+        C.unpack json `shouldContain` "\"audience\":[\"user\"]"
+        jsonText      `shouldContain` "\"audience\":[\"user\"]"
+        rpcWrapped    `shouldContain` "\"audience\":[\"user\"]"
+
+        C.unpack json `shouldContain` "\"priority\":42"
+        jsonText      `shouldContain` "\"priority\":42"
+        rpcWrapped    `shouldContain` "\"priority\":42"
+
+        C.unpack json `shouldContain` "\"text\":\"hello world\""
+        jsonText      `shouldContain` "\"text\":\"hello world\""
+        rpcWrapped    `shouldContain` "\"text\":\"hello world\""
+
+        C.unpack json `shouldContain` "\"type\":\"text\""
+        jsonText      `shouldContain` "\"type\":\"text\""
+        rpcWrapped    `shouldContain` "\"type\":\"text\""
 
       it "encodes TextContent without annotations" $ do
-        let subject = TextContent "hello world" Nothing
-        let json    = encode subject
-        C.unpack json `shouldBe` "{\"text\":\"hello world\",\"type\":\"text\"}"
+        let subject    = TextContent "hello world" Nothing
+
+        let json       = encode subject
+        let jsonText   = TL.unpack $ encodeToLazyText subject
+        res            <- buildResponse ((const (return . Right $ CallToolResult (V.singleton subject) Nothing)) :: (Monad m) => CallToolRequest -> m (Either ErrorObj CallToolResult)) $ buildRequest V2 (CallToolRequest "foobar" Nothing) (IdInt 1)
+        let rpcWrapped = TL.unpack $ encodeToLazyText res
+
+        C.unpack json `shouldNotContain` "\"audience\""
+        jsonText      `shouldNotContain` "\"audience\""
+        rpcWrapped    `shouldNotContain` "\"audience\""
+
+        C.unpack json `shouldNotContain` "\"priority\""
+        jsonText      `shouldNotContain` "\"priority\""
+        rpcWrapped    `shouldNotContain` "\"priority\""
+
+        C.unpack json `shouldNotContain` "\"annotations\""
+        jsonText      `shouldNotContain` "\"annotations\""
+        rpcWrapped    `shouldNotContain` "\"annotations\""
 
   describe "CallToolResult decoding" $ do
     context "CallToolResultContent" $ do
@@ -146,4 +222,9 @@ spec = context "json marshalling" $ do
       it "decodes TextContent without annotations" $ do
         let subject = TextContent "hello world" Nothing
         let marshalled = "{\"text\":\"hello world\",\"type\":\"text\"}"
+        decode marshalled `shouldBe` Just subject
+
+      it "decodes ImageContent" $ do
+        let subject = ImageContent "AAABAAMAMD==" "image/x-icon" Nothing
+        let marshalled = "{\"mimeType\":\"image/x-icon\",\"type\":\"image\",\"data\":\"AAABAAMAMD==\"}"
         decode marshalled `shouldBe` Just subject
