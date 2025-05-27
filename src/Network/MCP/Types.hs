@@ -30,6 +30,7 @@ module Network.MCP.Types
   , ListToolsRequest(..)
   , ListToolsResult(..)
 
+  , methodInitialize
   , noCapabilities
 
   , Role(..)
