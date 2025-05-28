@@ -49,6 +49,8 @@ import qualified Data.Aeson.KeyMap as M
 import Network.JSONRPC
 import Network.MCP.Types
 
+import qualified System.IO as SIO
+
 data ToolCallHandler m  = ToolCallHandler
   { tool    :: Tool
   , handler :: CallToolRequest -> MCPT m (Either ErrorObj CallToolResult)
@@ -104,7 +106,10 @@ stdioServer :: (Alternative m, MonadFail m, MonadLoggerIO m, MonadUnliftIO m)
             => [(Request -> MCPT m ())]
             -> [ToolCallHandler m]
             -> m ()
-stdioServer = server stdin stdout
+stdioServer hs ts = do
+  liftIO $ SIO.hSetBuffering SIO.stdin SIO.LineBuffering
+  liftIO $ SIO.hSetBuffering SIO.stdout SIO.LineBuffering
+  server stdin stdout hs ts
 
 server :: (Alternative m, MonadFail m, MonadLoggerIO m, MonadUnliftIO m)
        => ConduitT () ByteString m ()

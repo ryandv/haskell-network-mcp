@@ -5,15 +5,16 @@
 
 module Network.MCP.Host where
 
-import Control.Concurrent.STM.TVar
-
 import Control.Applicative
+import Control.Concurrent
+import Control.Concurrent.STM.TVar
 import Control.Monad
 import Control.Monad.STM
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.Reader
 import Control.Monad.Trans.State.Strict
 import Control.Monad.IO.Class
+import Control.Monad.IO.Unlift
 import Control.Monad.Logger
 
 import GHC.Records
@@ -28,6 +29,9 @@ import Data.Vector
 
 import Network.JSONRPC
 import Network.MCP.Types
+
+import System.IO
+import System.Process
 
 clientImplementation :: Implementation
 clientImplementation = Implementation "haskell-network-mcp" "v0.0.1"
@@ -46,26 +50,36 @@ data ClientContext = ClientContext
 initialContext :: ClientContext
 initialContext = ClientContext ClientStart
 
-{--
-client           :: (MonadLoggerIO m, MonadUnliftIO m)
-                 => ConduitT () ByteString m ()
-                 -> ConduitT ByteString Void m ()
-                 -> m a
-                 -> m a
-client input out = runJSONRPCT V2 False out input do
-  ctx <- liftIO . atomically . newTVar $ initialContext
-  lift . logWithoutLoc "Client" LevelDebug $ ("Initializing." :: Text)
+client     :: (MonadLoggerIO m, MonadUnliftIO m)
+           => CreateProcess
+           -> m ()
+           -> m ()
+client p m = do
+  errHdl <- liftIO $ openFile "/dev/null" WriteMode
+  (min, mout, merr, h) <- liftIO $ createProcess p { std_in  = CreatePipe
+                                                   , std_out = CreatePipe
+                                                   , std_err = UseHandle errHdl
+                                                   }
+  let handles = min >>= (\input -> mout >>= (\out -> return (input, out)))
 
-  res <- sendRequest $ InitializeRequest
-    { capabilities = dummyClientCaps
-    , clientInfo   = clientImplementation
-    }
+  maybe (return ()) (\(input, out) -> do
+    liftIO $ hSetBuffering input LineBuffering
+    liftIO $ hSetBuffering out LineBuffering
 
-  lift . logWithoutLoc "Client" LevelDebug . ("Received response: " `append`) . toStrict . encodeToLazyText $ (res :: Maybe (Either ErrorObj InitializeResult))
+    runJSONRPCT V2 False (sinkHandle input) (sourceHandle out) $ do
+      lift . logWithoutLoc "Client" LevelDebug $ ("Initializing." :: Text)
 
-  res2 <- sendRequest $ InitializedNotification
+      res <- sendRequest $ InitializeRequest
+        { capabilities = dummyClientCaps
+        , clientInfo   = clientImplementation
+        }
 
-  lift . logWithoutLoc "Client" LevelDebug . toStrict . encodeToLazyText $ (res2 :: Maybe (Either ErrorObj InitializeResult))
+      lift . logWithoutLoc "Client" LevelDebug $ ("Sent InitializeRequest." :: Text)
 
-  return ()
-  --}
+      lift . logWithoutLoc "Client" LevelDebug . ("Received response: " `append`) . toStrict . encodeToLazyText $ (res :: Maybe (Either ErrorObj InitializeResult))
+
+      res2 <- sendRequest $ InitializedNotification
+
+      lift . logWithoutLoc "Client" LevelDebug . toStrict . encodeToLazyText $ (res2 :: Maybe (Either ErrorObj InitializeResult))
+
+      return ()) $ handles
