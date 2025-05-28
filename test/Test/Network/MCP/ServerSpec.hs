@@ -36,13 +36,18 @@ initializeResultDecoder = liftIO . (maybe (expectationFailure "failed to decode 
   where printRPCPayload :: (MonadIO m, MonadLogger m, Show a) => a -> m a
         printRPCPayload = liftA2 (>>) (liftA2 (>>) (liftIO . print) (const . liftIO $ print "=====\n")) (return)
 
-callToolResultDecoder :: (MonadIO m, MonadLogger m) => B.ByteString -> m ()
-callToolResultDecoder = liftIO . (maybe (expectationFailure "failed to decode CallToolResult") (const $ return ())
+callToolResultDecoder          :: (MonadIO m, MonadLogger m) => TL.Text -> B.ByteString -> m ()
+callToolResultDecoder expected = liftIO . (maybe (expectationFailure "failed to decode CallToolResult") ((`shouldBe` (V.fromList [TextContent (TL.toStrict expected) Nothing])) . content)
                                . ((>>= fromResponse methodToolsCall) :: Maybe Response -> Maybe CallToolResult)
                                . (decode                             :: L.ByteString -> Maybe Response)
                                . L.fromStrict)
   where printRPCPayload :: (MonadIO m, MonadLogger m, Show a) => a -> m a
         printRPCPayload = liftA2 (>>) (liftA2 (>>) (liftIO . print) (const . liftIO $ print "=====\n")) (return)
+
+-- TODO: annotation support
+echoHandler   :: (MonadIO m, MonadLogger m) => CallToolRequest -> MCPT m (Either ErrorObj CallToolResult)
+echoHandler r = maybe (return . Left $ errorArguments) (return . maybe (Left errorArguments) (\(String txt) -> Right $ CallToolResult (V.fromList [TextContent txt Nothing]) (Just False)) . (M.lookup "text")) (arguments r)
+  where errorArguments = errorParams Null ("Missing argument: 'text'")
 
 spec :: Spec
 spec = describe "MCP server" $ do
@@ -61,18 +66,29 @@ spec = describe "MCP server" $ do
     let input       = sourceForever initJSONs
     let output      = takeC 1 .| mapM_C initializeResultDecoder
 
-    liftIO . runNoLoggingT $ server input output V.empty
+    liftIO . runNoLoggingT $ server input output [] []
 
     -- TODO: strengthen expectation in light of above note
     True `shouldBe` True
 
   it "accepts user-defined tool call handlers" $ do
-    let callToolReq  = CallToolRequest "echo" . Just $ M.fromList [("text", "hello world")]
-    let callToolJSON = L.toStrict . encode $ buildRequest V2 callToolReq (IdInt 0)
-    let input        = sourceForever $ initJSONs ++ [callToolJSON]
-    let output       = takeC 1 .| mapM_C initializeResultDecoder >> takeC 1 .| mapM_C callToolResultDecoder
+    let callToolReq   = CallToolRequest "echo" . Just $ M.fromList [("text", "hello world")]
+    let callToolJSON  = L.toStrict . encode $ buildRequest V2 callToolReq (IdInt 0)
 
-    liftIO . runNoLoggingT $ server input output V.empty
+    let input         = sourceForever $ initJSONs ++ [callToolJSON]
+    let output        = takeC 1 .| mapM_C initializeResultDecoder >> takeC 1 .| mapM_C (callToolResultDecoder "hello world")
+
+    let textProperty  = ("text", object [ ("type"        .= ("string" :: TL.Text))
+                                        , ("description" .= ("Arbitrary text to be returned to the client" :: TL.Text))
+                                        ])
+
+    let echoSchema    = InputSchema (Just $ M.fromList []) (Just $ V.fromList ["text"])
+    let echoTool      = Tool "echo" (Just "Responds with its input") echoSchema Nothing
+    let echoConfig    = ToolCallHandler echoTool echoHandler
+
+    liftIO . runStderrLoggingT $ server input output [] [ echoConfig ]
 
     -- TODO: strengthen expectation in light of above note
     True `shouldBe` True
+
+  -- TODO: test coverage for tool not found; should return -32602 "Unknown tool: $TOOL_NAME"
