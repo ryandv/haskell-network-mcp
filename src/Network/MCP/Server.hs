@@ -4,7 +4,16 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeApplications #-}
 
-module Network.MCP.Server where
+module Network.MCP.Server
+  ( MCPT
+  , ToolError(..)
+  , ToolArgumentDescriptor(..)
+
+  , handleToolCall
+  , server
+  , stdioServer
+  , toolBuilder
+  ) where
 
 import qualified Prelude
 import Prelude hiding(foldr, lookup)
@@ -25,6 +34,8 @@ import GHC.Records
 
 import Data.Aeson
 import Data.Aeson.Text
+import Data.Aeson.Types
+import Data.Aeson.Key
 import Data.ByteString(ByteString)
 import Data.Conduit
 import Data.Conduit.Combinators hiding(find, null, print)
@@ -33,6 +44,7 @@ import Data.HashMap.Strict hiding(foldr, fromList, null)
 import Data.Text hiding(find, foldr, null)
 import Data.Text.Lazy hiding(append, find, foldr, null, pack, Text, unpack)
 import Data.Vector hiding(null)
+import qualified Data.Aeson.KeyMap as M
 
 import Network.JSONRPC
 import Network.MCP.Types
@@ -50,11 +62,49 @@ data ServerContext m = ServerContext
   , serverTools            :: Vector (ToolCallHandler m)
   }
 
+-- TODO: tool annotations
+data ToolArgumentDescriptor = ToolArgumentDescriptor
+  { argName        :: Text
+  , argDescription :: Text
+  , argType        :: Text
+  , argRequired    :: Bool
+  } deriving(Eq, Show)
+
+data ToolError = ArgumentError Text | ExecutionError Text
+
 type MCPT m = ReaderT (TVar (ServerContext m)) (JSONRPCT m)
 
 initialState                :: [ToolCallHandler m] -> ServerContext m
 initialState ts | null ts   = ServerContext ServerStart Nothing noCapabilities (fromList ts)
                 | otherwise = ServerContext ServerStart Nothing (noCapabilities { tools = Just $ ListChangedCapability False }) (fromList ts)
+
+-- TODO: tool annotations
+toolBuilder :: (Monad m)
+            => Text
+            -> Text
+            -> [ToolArgumentDescriptor]
+            -> (CallToolRequest -> MCPT m (Either ToolError CallToolResult))
+            -> ToolCallHandler m
+toolBuilder n d args h = ToolCallHandler tl (h >=> either (return . mapError) (return . Right))
+  where tl   = Tool n (Just d) is Nothing
+        is   = InputSchema (Just . M.fromList
+                                 . fmap (\a -> (fromText (argName a), object [ ("type" .= argType a), ("description" .= argDescription a) ]))
+                                 $ args)
+                           (Just $ fromList reqd)
+        reqd = argName <$> Prelude.filter argRequired args
+        mapError (ExecutionError e) = Right . flip CallToolResult (Just True) . fromList . return . flip TextContent Nothing $ e
+        mapError (ArgumentError e ) = Left $ errorParams Null ("Missing argument: " `mappend` (unpack e))
+
+handleToolCall     :: (FromJSON r, MonadIO m, MonadLogger m) => (r -> Either ToolError CallToolResult) -> (CallToolRequest -> MCPT m (Either ToolError CallToolResult))
+handleToolCall h r = return . either (Left . ArgumentError . pack) h
+                            . parseEither parseJSON
+                            $ maybe (Object M.empty) id (fmap Object (arguments r))
+
+stdioServer :: (Alternative m, MonadFail m, MonadLoggerIO m, MonadUnliftIO m)
+            => [(Request -> MCPT m ())]
+            -> [ToolCallHandler m]
+            -> m ()
+stdioServer = server stdin stdout
 
 server :: (Alternative m, MonadFail m, MonadLoggerIO m, MonadUnliftIO m)
        => ConduitT () ByteString m ()

@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 module Test.Network.MCP.ServerSpec where
 
@@ -10,12 +11,16 @@ import Control.Monad.Logger
 
 import Data.Aeson
 import Data.Aeson.Text
+import Data.Aeson.Types
 import Data.Maybe
 import qualified Data.Aeson.KeyMap as M
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as L
+import qualified Data.Text as T
 import qualified Data.Text.Lazy as TL
 import qualified Data.Vector as V
+
+import GHC.Generics
 
 import Network.MCP.Server
 import Network.MCP.Types
@@ -44,10 +49,17 @@ callToolResultDecoder expected = liftIO . (maybe (expectationFailure "failed to 
   where printRPCPayload :: (MonadIO m, MonadLogger m, Show a) => a -> m a
         printRPCPayload = liftA2 (>>) (liftA2 (>>) (liftIO . print) (const . liftIO $ print "=====\n")) (return)
 
+data EchoArguments = EchoArguments
+  { text :: T.Text
+  } deriving(Eq, Generic, Show)
+
+instance FromJSON EchoArguments
+instance ToJSON EchoArguments where
+  toEncoding = genericToEncoding defaultOptions
+
 -- TODO: annotation support
-echoHandler   :: (MonadIO m, MonadLogger m) => CallToolRequest -> MCPT m (Either ErrorObj CallToolResult)
-echoHandler r = maybe (return . Left $ errorArguments) (return . maybe (Left errorArguments) (\(String txt) -> Right $ CallToolResult (V.fromList [TextContent txt Nothing]) (Just False)) . (M.lookup "text")) (arguments r)
-  where errorArguments = errorParams Null ("Missing argument: 'text'")
+echoHandler :: (MonadIO m, MonadLogger m) => CallToolRequest -> MCPT m (Either ToolError CallToolResult)
+echoHandler = handleToolCall (\(EchoArguments txt) -> Right $ CallToolResult (V.fromList [TextContent txt Nothing]) (Just False))
 
 spec :: Spec
 spec = describe "MCP server" $ do
@@ -78,17 +90,19 @@ spec = describe "MCP server" $ do
     let input         = sourceForever $ initJSONs ++ [callToolJSON]
     let output        = takeC 1 .| mapM_C initializeResultDecoder >> takeC 1 .| mapM_C (callToolResultDecoder "hello world")
 
-    let textProperty  = ("text", object [ ("type"        .= ("string" :: TL.Text))
-                                        , ("description" .= ("Arbitrary text to be returned to the client" :: TL.Text))
-                                        ])
+    let echoConfig = toolBuilder "echo"
+                                 "Responds with its input"
+                                 [ ToolArgumentDescriptor "text"
+                                                          "Arbitrary text to be returned to the client"
+                                                          "string"
+                                                          True
+                                 ]
+                                 echoHandler
 
-    let echoSchema    = InputSchema (Just $ M.fromList []) (Just $ V.fromList ["text"])
-    let echoTool      = Tool "echo" (Just "Responds with its input") echoSchema Nothing
-    let echoConfig    = ToolCallHandler echoTool echoHandler
-
-    liftIO . runStderrLoggingT $ server input output [] [ echoConfig ]
+    liftIO . runNoLoggingT $ server input output [] [ echoConfig ]
 
     -- TODO: strengthen expectation in light of above note
     True `shouldBe` True
 
   -- TODO: test coverage for tool not found; should return -32602 "Unknown tool: $TOOL_NAME"
+  -- TODO: test coverage for invalid tool arguments; should return -32602?
