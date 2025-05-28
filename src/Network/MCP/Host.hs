@@ -38,15 +38,34 @@ dummyClientCaps = ClientCapabilities
   , sampling = Nothing
   }
 
-client :: LoggingT IO ()
-client = jsonrpcTCPClient V2 True (clientSettings 6666 "localhost") $ do
+data ClientState = ClientStart | ClientInitializing | ClientOperational deriving(Eq, Show)
+data ClientContext = ClientContext
+  { currentState :: ClientState
+  }
+
+initialContext :: ClientContext
+initialContext = ClientContext ClientStart
+
+{--
+client           :: (MonadLoggerIO m, MonadUnliftIO m)
+                 => ConduitT () ByteString m ()
+                 -> ConduitT ByteString Void m ()
+                 -> m a
+                 -> m a
+client input out = runJSONRPCT V2 False out input do
+  ctx <- liftIO . atomically . newTVar $ initialContext
   lift . logWithoutLoc "Client" LevelDebug $ ("Initializing." :: Text)
+
   res <- sendRequest $ InitializeRequest
     { capabilities = dummyClientCaps
     , clientInfo   = clientImplementation
     }
-  lift . logWithoutLoc "Client" LevelDebug . toStrict . encodeToLazyText $ (res :: Maybe (Either ErrorObj InitializeResult))
+
+  lift . logWithoutLoc "Client" LevelDebug . ("Received response: " `append`) . toStrict . encodeToLazyText $ (res :: Maybe (Either ErrorObj InitializeResult))
 
   res2 <- sendRequest $ InitializedNotification
+
   lift . logWithoutLoc "Client" LevelDebug . toStrict . encodeToLazyText $ (res2 :: Maybe (Either ErrorObj InitializeResult))
+
   return ()
+  --}

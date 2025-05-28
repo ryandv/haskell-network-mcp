@@ -29,10 +29,10 @@ import Data.ByteString(ByteString)
 import Data.Conduit
 import Data.Conduit.Combinators hiding(null, print)
 import Data.Conduit.Network
-import Data.HashMap.Strict hiding(null)
+import Data.HashMap.Strict hiding(fromList, null)
 import Data.Text hiding(null)
 import Data.Text.Lazy hiding(append, null, pack, Text)
-import Data.Vector hiding(fromList)
+import Data.Vector
 
 import Network.JSONRPC
 import Network.MCP.Types
@@ -55,30 +55,37 @@ initialState ts | null ts   = ServerContext ServerStart Nothing noCapabilities t
                 | otherwise = ServerContext ServerStart Nothing (noCapabilities { tools = Just $ ListChangedCapability False }) ts
 
 server :: (Alternative m, MonadFail m, MonadLoggerIO m, MonadUnliftIO m)
-       => ConduitT ByteString Void m ()
-       -> ConduitT () ByteString m ()
+       => ConduitT () ByteString m ()
+       -> ConduitT ByteString Void m ()
        -> Vector Tool
        -> m ()
-server out input ts = do
+server input out ts = do
   ctx <- liftIO . atomically . newTVar $ initialState ts
 
   runJSONRPCT V2 False out input . (flip runReaderT) ctx $ (forever serverLoop) <|> return ()
 
   where
-    serverLoop :: (Alternative m, MonadFail m, MonadLoggerIO m) => MCPT m ()
+    serverLoop :: (Alternative m, MonadFail m, MonadLoggerIO m, MonadUnliftIO m) => MCPT m ()
     serverLoop = lift receiveRequest >>= maybe (logEndOfStream >> shutdown)
                                                (liftA2 (>>) logRequest handleRequest)
 
-    handleRequest                     :: (MonadLoggerIO m) => Request -> MCPT m ()
+    handleRequest                     :: (Alternative m, MonadFail m, MonadLoggerIO m, MonadUnliftIO m) => Request -> MCPT m ()
     handleRequest req                 = do
+      logServerError . pack . show $ req
       ctx      <- ask
       state    <- fmap currentState   . liftIO . atomically . readTVar $ ctx
 
       case state of
         ServerStart        -> handleWith initializeResultHandler req
         ServerInitializing -> handleInitializedNotification req
-        ServerOperational  -> case getReqMethod req of
-                                methodToolsList -> handleWith listToolsResultHandler req
+        ServerOperational  -> serverMainHandler req
+
+    serverMainHandler     :: (Alternative m, MonadFail m, MonadLoggerIO m, MonadUnliftIO m)
+                          => Request
+                          -> MCPT m ()
+    serverMainHandler req | getReqMethod req == methodToolsList = handleWith listToolsResultHandler req
+                          | getReqMethod req == methodToolsCall = handleWith callToolResultHandler req
+                          |                           otherwise = handleWith (methodMissingHandler (getReqMethod req)) req
 
     handleWith             :: (FromRequest q, MonadLoggerIO m, ToJSON r) => (q -> MCPT m (Either ErrorObj r)) -> Request -> MCPT m ()
     handleWith handler req = do
@@ -114,6 +121,16 @@ server out input ts = do
       ts <- fmap serverTools . liftIO . atomically . readTVar $ ctx
 
       return . Right $ ListToolsResult ts
+
+    callToolResultHandler     :: (MonadLoggerIO m) => CallToolRequest -> MCPT m (Either ErrorObj CallToolResult)
+    callToolResultHandler req = do
+      ctx <- ask
+      ts <- fmap serverTools . liftIO . atomically . readTVar $ ctx
+
+      return . Right $ CallToolResult (fromList [TextContent "hello" Nothing]) (Just False)
+
+    methodMissingHandler   :: (MonadLoggerIO m) => Method -> Value -> MCPT m (Either ErrorObj Value)
+    methodMissingHandler m = (const $ return . Left . errorMethod $ m)
 
     logEndOfStream                    :: (Alternative m, MonadFail m, MonadLoggerIO m) => MCPT m ()
     logEndOfStream                    = logServerWarn "Stream empty."

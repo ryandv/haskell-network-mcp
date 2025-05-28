@@ -5,6 +5,7 @@ import Control.Monad.IO.Class
 
 import Data.Aeson
 import Data.Aeson.Text
+import Data.Aeson.Types
 import qualified Data.Aeson.KeyMap as M
 import qualified Data.ByteString.Lazy.Char8 as C
 import qualified Data.Text.Lazy as TL
@@ -134,6 +135,33 @@ spec = context "json marshalling" $ do
       let json = encode subject
       C.unpack json `shouldBe` "{\"name\":\"foobar\",\"arguments\":{\"foo\":\"bar\"}}"
 
+  describe "CallToolRequest decoding" $ do
+    it "decodes" $ do
+      let subject = CallToolRequest "echo" . Just $ M.fromList [("text", "hello world")]
+
+      let marshalled = "{\"arguments\":{\"text\":\"hello world\"},\"name\":\"echo\"}"
+      decode marshalled `shouldBe` Just subject
+
+    it "decodes when wrapped in a JSONRPC Request" $ do
+      let subject    = CallToolRequest "echo" . Just $ M.fromList [("text", "hello world")]
+      let params     = (Object (M.fromList [("arguments", Object (M.fromList [("text", String "hello world")])), ("name", String "echo")]))
+      let rpcWrapped = buildRequest V2 params (IdInt 1)
+      let request    = Request { getReqVer = V2
+                               , getReqMethod = "tools/call"
+                               , getReqParams = Object (M.fromList [("arguments",Object (M.fromList [("text",String "hello world")])),("name",String "echo")])
+                               , getReqId = IdInt 0
+                               }
+
+      fromRequest rpcWrapped `shouldBe` Right subject
+      let maybeParser = parseParams methodToolsCall :: Maybe (Value -> Parser CallToolRequest)
+      let doParse     = flip parseEither params :: (Value -> Parser CallToolRequest) -> Either String CallToolRequest
+      (case maybeParser of
+        Nothing -> Left $ "fuck"
+        Just p -> case parseEither p params of
+          Left e -> Left $ "shit"
+          Right q -> Right q) `shouldBe` Right subject
+
+
   describe "CallToolResult encoding" $ do
     context "CallToolResult proper" $ do
       it "encodes" $ do
@@ -155,6 +183,7 @@ spec = context "json marshalling" $ do
         C.unpack json `shouldNotContain` "\"isError\""
         jsonText      `shouldNotContain` "\"isError\""
         rpcWrapped    `shouldNotContain` "\"isError\""
+
       it "encodes errors" $ do
         let subject = CallToolResult (V.singleton (TextContent "hello world" Nothing)) (Just True)
 

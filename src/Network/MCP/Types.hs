@@ -31,6 +31,8 @@ module Network.MCP.Types
   , ListToolsResult(..)
 
   , methodInitialize
+  , methodToolsCall
+  , methodToolsList
   , noCapabilities
 
   , Role(..)
@@ -96,7 +98,8 @@ instance ToJSON InitializeRequest where
                     ]
 
 instance FromRequest InitializeRequest where
-  parseParams = const $ Just (genericParseJSON customOptions)
+  parseParams methodInitialize = Just (genericParseJSON customOptions)
+  parseParams _                = Nothing
 
 instance ToRequest InitializeRequest where
   requestMethod  = const methodInitialize
@@ -139,7 +142,8 @@ methodNotificationsInitialized :: Text
 methodNotificationsInitialized = "notifications/initialized"
 
 instance FromRequest InitializedNotification where
-  parseParams = const $ Just (genericParseJSON customOptions)
+  parseParams methodNotificationsInitialized = Just (genericParseJSON customOptions)
+  parseParams _                              = Nothing
 
 instance ToRequest InitializedNotification where
   requestMethod  = const methodNotificationsInitialized
@@ -161,7 +165,8 @@ methodToolsList :: Text
 methodToolsList = "tools/list"
 
 instance FromRequest ListToolsRequest where
-  parseParams = const $ Just parseJSON
+  parseParams methodToolsList = Just parseJSON
+  parseParams _               = Just parseJSON
 
 instance ToRequest ListToolsRequest where
   requestMethod  = const methodToolsList
@@ -205,6 +210,8 @@ methodToolsCall :: Text
 methodToolsCall = "tools/call"
 
 instance FromJSON CallToolRequest where
+  parseJSON (Object o) = CallToolRequest <$> o .: "name" <*> (o .: "arguments" <|> return Nothing)
+  parseJSON _          = mempty
 instance ToJSON CallToolRequest where
   toEncoding r = pairs (  "name"         .= getField @"name" r
                        <> (optionalSeries "arguments" $ arguments r)
@@ -213,7 +220,8 @@ instance ToJSON CallToolRequest where
                      ] Prelude.++ (optionalPair "arguments" (arguments q)))
 
 instance FromRequest CallToolRequest where
-  parseParams = const $ Just (genericParseJSON customOptions)
+  parseParams methodToolsCall = Just parseJSON
+  parseParams _               = Nothing
 
 instance ToRequest CallToolRequest where
   requestMethod  = const methodToolsCall
