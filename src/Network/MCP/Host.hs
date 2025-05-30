@@ -52,7 +52,7 @@ initialContext = ClientContext ClientStart
 
 client     :: (MonadLoggerIO m, MonadUnliftIO m)
            => CreateProcess
-           -> m ()
+           -> JSONRPCT m ()
            -> m ()
 client p m = do
   errHdl <- liftIO $ openFile "/dev/null" WriteMode
@@ -82,4 +82,4 @@ client p m = do
 
       lift . logWithoutLoc "Client" LevelDebug . toStrict . encodeToLazyText $ (res2 :: Maybe (Either ErrorObj InitializeResult))
 
-      return ()) $ handles
+      m) $ handles

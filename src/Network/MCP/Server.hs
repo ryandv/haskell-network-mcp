@@ -97,10 +97,9 @@ toolBuilder n d args h = ToolCallHandler tl (h >=> either (return . mapError) (r
         mapError (ExecutionError e) = Right . flip CallToolResult (Just True) . fromList . return . flip TextContent Nothing $ e
         mapError (ArgumentError e ) = Left $ errorParams Null ("Missing argument: " `mappend` (unpack e))
 
-handleToolCall     :: (FromJSON r, MonadIO m, MonadLogger m) => (r -> Either ToolError CallToolResult) -> (CallToolRequest -> MCPT m (Either ToolError CallToolResult))
-handleToolCall h r = return . either (Left . ArgumentError . pack) h
-                            . parseEither parseJSON
-                            $ maybe (Object M.empty) id (fmap Object (arguments r))
+handleToolCall     :: (FromJSON r, MonadIO m, MonadLogger m) => (r -> MCPT m (Either ToolError CallToolResult)) -> (CallToolRequest -> MCPT m (Either ToolError CallToolResult))
+handleToolCall h r = either (return . Left . ArgumentError . pack) h . parseEither parseJSON
+                                                                     $ maybe (Object M.empty) id (fmap Object (arguments r))
 
 stdioServer :: (Alternative m, MonadFail m, MonadLoggerIO m, MonadUnliftIO m)
             => [(Request -> MCPT m ())]
