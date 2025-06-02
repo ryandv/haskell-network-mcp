@@ -15,7 +15,6 @@ import Data.Conduit.Combinators hiding(print)
 import Data.Text
 import Data.Text.Lazy hiding(append, pack, Text)
 
-import Network.JSONRPC
 import Network.MCP.Types
 
 import System.IO
@@ -38,6 +37,7 @@ data ClientContext = ClientContext
 initialContext :: ClientContext
 initialContext = ClientContext ClientStart
 
+{--
 client     :: (MonadLoggerIO m, MonadUnliftIO m)
            => CreateProcess
            -> JSONRPCT m ()
@@ -71,3 +71,4 @@ client p m = do
       lift . logWithoutLoc "Client" LevelDebug . toStrict . encodeToLazyText $ (res2 :: Maybe (Either ErrorObj InitializeResult))
 
       m) $ handles
+      --}

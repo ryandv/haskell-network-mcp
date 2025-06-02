@@ -68,8 +68,6 @@ import Data.Vector
 import GHC.Generics
 import GHC.Records
 
-import Network.JSONRPC
-
 protocolVersion :: Text
 protocolVersion = "2025-03-26"
 
@@ -89,8 +87,8 @@ class (FromJSON q, ToJSON q) => MCPRequest q where
   mcpRequestJSON       :: (GToJSON' Value Zero (Rep q), ToJSON q) => Maybe (Either Integer Text) -> q -> Value
   mcpRequestJSON rid q = object ([ "jsonrpc" .= ("2.0" :: Text)
                                   , "method"  .= methodName q
-                                  , "params"  .= toJSON q
-                                  ] Prelude.++ (optionalPair "id" (fmap (either toJSON toJSON) rid)))
+                                  ] Prelude.++ (optionalPair "params" (if toJSON q == Null then Nothing else Just (toJSON q)))
+                                    Prelude.++ (optionalPair "id" (fmap (either toJSON toJSON) rid)))
 
 class (FromJSON r, ToJSON r) => MCPResult r where
   mcpResultJSON       :: (GToJSON' Value Zero (Rep r), ToJSON r) => Maybe (Either Integer Text) -> r -> Value
@@ -166,14 +164,6 @@ instance ToJSON InitializeRequest where
                     , "clientInfo"      .= (genericToJSON customOptions (clientInfo q))
                     ]
 
-instance FromRequest InitializeRequest where
-  parseParams methodInitialize = Just (genericParseJSON customOptions)
-  parseParams _                = Nothing
-
-instance ToRequest InitializeRequest where
-  requestMethod  = const methodInitialize
-  requestIsNotif = const False
-
 instance MCPRequest InitializeRequest where
   methodName = const $ methodInitialize
 
@@ -201,9 +191,6 @@ instance ToJSON InitializeResult where
                           ] Prelude.++ (optionalPair "instructions" (instructions r)))
     _          -> genericToJSON customOptions r
 
-instance FromResponse InitializeResult where
-  parseResult = const $ Just (genericParseJSON customOptions)
-
 instance MCPResult InitializeResult
 
 {---------------------------------------
@@ -214,14 +201,6 @@ data InitializedNotification = InitializedNotification deriving(Eq, Generic, Sho
 
 methodNotificationsInitialized :: Text
 methodNotificationsInitialized = "notifications/initialized"
-
-instance FromRequest InitializedNotification where
-  parseParams methodNotificationsInitialized = Just (genericParseJSON customOptions)
-  parseParams _                              = Nothing
-
-instance ToRequest InitializedNotification where
-  requestMethod  = const methodNotificationsInitialized
-  requestIsNotif = const True
 
 instance FromJSON InitializedNotification where
   parseJSON _ = return InitializedNotification
@@ -239,14 +218,6 @@ data ListToolsRequest = ListToolsRequest deriving(Eq, Generic, Show)
 
 methodToolsList :: Text
 methodToolsList = "tools/list"
-
-instance FromRequest ListToolsRequest where
-  parseParams methodToolsList = Just parseJSON
-  parseParams _               = Just parseJSON
-
-instance ToRequest ListToolsRequest where
-  requestMethod  = const methodToolsList
-  requestIsNotif = const False
 
 instance FromJSON ListToolsRequest where
   parseJSON _ = return ListToolsRequest
@@ -269,9 +240,6 @@ instance ToJSON ListToolsResult where
   toEncoding = genericToEncoding customOptions
   toJSON     = genericToJSON customOptions
 
-instance FromResponse ListToolsResult where
-  parseResult = const $ Just (genericParseJSON customOptions)
-
 instance MCPResult ListToolsResult
 
 {---------------------------------------
@@ -292,14 +260,6 @@ instance FromJSON CallToolRequest where
 instance ToJSON CallToolRequest where
   toEncoding = genericToEncoding customOptions
   toJSON     = genericToJSON customOptions
-
-instance FromRequest CallToolRequest where
-  parseParams methodToolsCall = Just parseJSON
-  parseParams _               = Nothing
-
-instance ToRequest CallToolRequest where
-  requestMethod  = const methodToolsCall
-  requestIsNotif = const False
 
 instance MCPRequest CallToolRequest where
   methodName = const $ methodToolsCall
@@ -383,9 +343,6 @@ instance ToJSON CallToolResult where
     (Object o) -> object ([ "content" .= getField @"content" r
                           ] Prelude.++ (optionalPair "isError" (isError r)))
     _          -> genericToJSON customOptions r
-
-instance FromResponse CallToolResult where
-  parseResult = const $ Just (genericParseJSON customOptions)
 
 instance MCPResult CallToolResult
 
