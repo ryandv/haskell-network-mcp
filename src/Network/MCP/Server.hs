@@ -7,12 +7,15 @@
 
 module Network.MCP.Server
   ( MCPT
+  , NewMCPT
   , ToolError(..)
   , ToolArgumentDescriptor(..)
 
   , handleToolCall
+  , newHandleToolCall
   , newServer
   , newStdioServer
+  , newToolBuilder
   , server
   , stdioServer
   , toolBuilder
@@ -69,7 +72,7 @@ data ToolCallHandler m  = ToolCallHandler
 
 data NewToolCallHandler m  = NewToolCallHandler
   { newTool    :: Tool
-  , newHandler :: CallToolRequest -> ReaderT (TVar (NewServerContext m)) m (Either ErrorObj CallToolResult)
+  , newHandler :: CallToolRequest -> NewMCPT m (Either MCPError CallToolResult)
   }
 
 data ServerState = ServerStart | ServerInitializing | ServerOperational deriving(Eq, Show)
@@ -99,12 +102,14 @@ data ToolError = ArgumentError Text | ExecutionError Text
 
 type MCPT m = ReaderT (TVar (ServerContext m)) (JSONRPCT m)
 
+type NewMCPT m = ReaderT (TVar (NewServerContext m)) m
+
 -- TODO: tool annotations
 newToolBuilder            :: (Monad m)
                           => Text
                           -> Text
                           -> [ToolArgumentDescriptor]
-                          -> (CallToolRequest -> ReaderT (TVar (NewServerContext m)) m (Either ToolError CallToolResult))
+                          -> (CallToolRequest -> NewMCPT m (Either ToolError CallToolResult))
                           -> NewToolCallHandler m
 newToolBuilder n d args h = NewToolCallHandler tl (h >=> either (return . mapError) (return . Right))
   where tl   = Tool n (Just d) is Nothing
@@ -114,7 +119,7 @@ newToolBuilder n d args h = NewToolCallHandler tl (h >=> either (return . mapErr
                            (Just $ fromList reqd)
         reqd = argName <$> Prelude.filter argRequired args
         mapError (ExecutionError e) = Right . flip CallToolResult (Just True) . fromList . return . flip TextContent Nothing $ e
-        mapError (ArgumentError e ) = Left $ errorParams Null ("Missing argument: " `mappend` (unpack e))
+        mapError (ArgumentError e ) = Left $ MCPError (-32602) ("Missing argument: " `append` e) Nothing
 
 
 initialState                :: [ToolCallHandler m] -> ServerContext m
@@ -128,21 +133,25 @@ newInitialState ts | null ts   = NewServerContext ServerStart Nothing noCapabili
 newLogServer         :: (MonadLoggerIO m)
                      => LogLevel
                      -> Text
-                     -> ReaderT (TVar (NewServerContext m)) m ()
+                     -> NewMCPT m ()
 newLogServer lvl msg = ask >>= fmap newCurrentState . liftIO . atomically . readTVar
                            >>= (flip (flip logWithoutLoc $ lvl) $ msg) . (("Server@" `append`) . pack . show)
 
-newLogServerError :: (MonadLoggerIO m) => Text -> ReaderT (TVar (NewServerContext m)) m ()
+newLogServerError :: (MonadLoggerIO m) => Text -> NewMCPT m ()
 newLogServerError = newLogServer LevelError
 
-newLogServerDebug :: (MonadLoggerIO m) => Text -> ReaderT (TVar (NewServerContext m)) m ()
+newLogServerDebug :: (MonadLoggerIO m) => Text -> NewMCPT m ()
 newLogServerDebug = newLogServer LevelDebug
 
-newLogServerWarn  :: (MonadLoggerIO m) => Text -> ReaderT (TVar (NewServerContext m)) m ()
+newLogServerWarn  :: (MonadLoggerIO m) => Text -> NewMCPT m ()
 newLogServerWarn  = newLogServer LevelWarn
 
-newLogServerInfo  :: (MonadLoggerIO m) => Text -> ReaderT (TVar (NewServerContext m)) m ()
+newLogServerInfo  :: (MonadLoggerIO m) => Text -> NewMCPT m ()
 newLogServerInfo  = newLogServer LevelInfo
+
+newHandleToolCall     :: (FromJSON r, MonadIO m, MonadLogger m) => (r -> NewMCPT m (Either ToolError CallToolResult)) -> (CallToolRequest -> NewMCPT m (Either ToolError CallToolResult))
+newHandleToolCall h r = either (return . Left . ArgumentError . pack) h . parseEither parseJSON
+                                                                        $ maybe (Object M.empty) Prelude.id (fmap Object (arguments r))
 
 newStdioServer :: (MonadLoggerIO m)
                => [NewToolCallHandler m]
@@ -165,33 +174,45 @@ newServer input output ts = do
 
   ctx <- liftIO . atomically . newTVar $ newInitialState ts
 
-  runConduit . runReaderC ctx $ input' .| peekForeverE (lineAsciiC (mapWhile (decodeRequest . C.strip))
-                                       .| mapMC (liftA2 (>>) logRequest handleRequest)
-                                       .| mapWhileC Prelude.id
-                                       .| mapMC (liftA2 (>>) logResponse encodeResponse)
-                                       .| readerC (const output))
-  where
-    decodeRequest :: ByteString -> Maybe JSONRPCRequest
-    decodeRequest = decodeStrict
+  runConduit . runReaderC ctx $ input' .| peekForeverE mainConduit
 
-    handleRequest     :: (MonadLoggerIO m) => JSONRPCRequest -> ReaderT (TVar (NewServerContext m)) m (Maybe (Either MCPError Value))
+  where
+    mainConduit = lineAsciiC (mapMC decodeRequest) .| mapMC (liftA2 (>>) (either (const $ return ()) logRequest) handleRequest)
+                                                   .| mapWhileC Prelude.id
+                                                   .| mapMC (liftA2 (>>) (either (const $ return ()) logResponse) encodeResponse)
+                                                   .| readerC (const output)
+
+    decodeRequest :: (MonadLoggerIO m) => ByteString -> NewMCPT m (Either MCPError JSONRPCRequest)
+    decodeRequest = either (const $ return . Left $ MCPError (-32600) "invalid JSON-RPC 2.0 request" Nothing)
+                           (return . Right) . eitherDecodeStrict . C.strip
+
+    handleRequest     :: (MonadLoggerIO m) => Either MCPError JSONRPCRequest -> NewMCPT m (Maybe (Either MCPError Value))
     handleRequest req = do
       ctx <- ask
       state <- fmap newCurrentState . liftIO . atomically . readTVar $ ctx
 
-      case state of
-        ServerStart        -> handleWith initializeRequestHandler req
-        ServerInitializing -> handleWith initializedNotificationHandler req
-        ServerOperational  -> return . Just . Right $ object []
+      case req of
+        (Left e)  -> return . Just $ Left e
+        (Right q) -> case state of
+          ServerStart        -> handleWith initializeRequestHandler q
+          ServerInitializing -> handleWith initializedNotificationHandler q
+          ServerOperational  -> serverMainHandler q
 
+    serverMainHandler :: (MonadLoggerIO m) => JSONRPCRequest -> NewMCPT m (Maybe (Either MCPError Value))
+    serverMainHandler q | method q == methodToolsList = handleWith listToolsRequestHandler q
+                        | method q == methodToolsCall = handleWith callToolRequestHandler q
+                        |                   otherwise = return . Just . Right $ object []
+
+    -- TODO: brutal. extract type synonyms
     handleWith     :: (GToJSON' Value Zero (Rep r), MCPRequest q, MCPResult r, MonadLoggerIO m)
-                   => (q -> ReaderT (TVar (NewServerContext m)) m (Maybe (Either MCPError r)))
-                   -> (JSONRPCRequest -> ReaderT (TVar (NewServerContext m)) m (Maybe (Either MCPError Value)))
-    handleWith h q = either (const $ (return . Just . Left $ invalidParams)) (handle h) . parseEither parseJSON . maybe (Object M.empty) Prelude.id . params $ q
+                   => (q -> NewMCPT m (Maybe (Either MCPError r)))
+                   -> (JSONRPCRequest -> NewMCPT m (Maybe (Either MCPError Value)))
+    handleWith h q = either (const $ (return . Just . Left $ invalidParams)) (handle h) . parseEither parseJSON . reqParams $ q
       where invalidParams = MCPError (-32602) "invalid parameters for request" Nothing
             handle h      = h >=> return . fmap (either Left (Right . mcpResultJSON (id q)))
+            reqParams     = maybe (Object M.empty) Prelude.id . params
 
-    initializeRequestHandler     :: (MonadLoggerIO m) => InitializeRequest -> ReaderT (TVar (NewServerContext m)) m (Maybe (Either MCPError InitializeResult))
+    initializeRequestHandler     :: (MonadLoggerIO m) => InitializeRequest -> NewMCPT m (Maybe (Either MCPError InitializeResult))
     initializeRequestHandler req = do
       ctx <- ask
       liftIO . atomically $ do
@@ -207,14 +228,30 @@ newServer input output ts = do
           , instructions = Nothing
           }
 
-    initializedNotificationHandler     :: (MonadLoggerIO m) => InitializedNotification -> ReaderT (TVar (NewServerContext m)) m (Maybe (Either MCPError NotificationResult))
+    initializedNotificationHandler     :: (MonadLoggerIO m) => InitializedNotification -> NewMCPT m (Maybe (Either MCPError NotificationResult))
     initializedNotificationHandler req = do
       ctx <- ask
       newLogServerDebug "Initialized."
       liftIO . atomically $ modifyTVar ctx (\s -> s { newCurrentState = ServerOperational })
       return Nothing
 
-    logRequest :: (MonadLoggerIO m) => JSONRPCRequest -> ReaderT (TVar (NewServerContext m)) m ()
+    listToolsRequestHandler     :: (MonadLoggerIO m) => ListToolsRequest -> NewMCPT m (Maybe (Either MCPError ListToolsResult))
+    listToolsRequestHandler req = do
+      ctx <- ask
+      ts <- fmap newServerTools . liftIO . atomically . readTVar $ ctx
+
+      return . Just . Right $ ListToolsResult (newTool <$> ts)
+    --
+    -- TODO: response content types other than just text
+    callToolRequestHandler     :: (MonadLoggerIO m) => CallToolRequest -> NewMCPT m (Maybe (Either MCPError CallToolResult))
+    callToolRequestHandler req = do
+      ctx <- ask
+      ts <- fmap newServerTools . liftIO . atomically . readTVar $ ctx
+
+      result <- maybe (return . Left $ MCPError (-32602) ("Unknown tool: " `append` (getField @"name" req)) Nothing) (return . Right . ($ req) . newHandler) $ find ((== getField @"name" req) . getField @"name" . newTool) ts
+      either (return . Just . Left) (fmap Just) result
+
+    logRequest :: (MonadLoggerIO m) => JSONRPCRequest -> NewMCPT m ()
     logRequest = newLogServerDebug . ("=<< Received request: " `append`) . toStrict . encodeToLazyText
 
     logResponse = newLogServerDebug . (">>= Sending response: " `append`) . toStrict . encodeToLazyText

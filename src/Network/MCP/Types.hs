@@ -110,12 +110,11 @@ instance FromJSON MCPError where
 instance ToJSON MCPError where
   toEncoding (MCPError c m d) = pairs (  "code"    .= c
                                       <> "message" .= m
-                                      <> "data"    .= d
+                                      <> (optionalSeries "data" d)
                                       )
-  toJSON     (MCPError c m d) = object [ "code"    .= c
-                                       , "message" .= m
-                                       , "data"    .= d
-                                       ]
+  toJSON     (MCPError c m d) = object ([ "code"    .= c
+                                        , "message" .= m
+                                        ] Prelude.++ (optionalPair "data" d))
 
 data JSONRPCRequest = JSONRPCRequest
   { method :: Text
@@ -250,10 +249,12 @@ instance ToRequest ListToolsRequest where
   requestIsNotif = const False
 
 instance FromJSON ListToolsRequest where
-  parseJSON Null       = return ListToolsRequest
-  parseJSON _          = mempty
+  parseJSON _ = return ListToolsRequest
 instance ToJSON ListToolsRequest where
   toJSON _ = Null
+
+instance MCPRequest ListToolsRequest where
+  methodName = const $ methodToolsList
 
 {---------------------------------------
 -- ListToolsResult
@@ -270,6 +271,8 @@ instance ToJSON ListToolsResult where
 
 instance FromResponse ListToolsResult where
   parseResult = const $ Just (genericParseJSON customOptions)
+
+instance MCPResult ListToolsResult
 
 {---------------------------------------
 -- CallToolRequest
