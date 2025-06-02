@@ -5,27 +5,15 @@
 
 module Network.MCP.Host where
 
-import Control.Applicative
-import Control.Concurrent
-import Control.Concurrent.STM.TVar
-import Control.Monad
-import Control.Monad.STM
 import Control.Monad.Trans.Class
-import Control.Monad.Trans.Reader
-import Control.Monad.Trans.State.Strict
 import Control.Monad.IO.Class
 import Control.Monad.IO.Unlift
 import Control.Monad.Logger
 
-import GHC.Records
-
-import Data.Aeson
 import Data.Aeson.Text
 import Data.Conduit.Combinators hiding(print)
-import Data.Conduit.Network
 import Data.Text
 import Data.Text.Lazy hiding(append, pack, Text)
-import Data.Vector
 
 import Network.JSONRPC
 import Network.MCP.Types

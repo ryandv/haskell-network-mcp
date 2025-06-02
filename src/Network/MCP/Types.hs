@@ -24,16 +24,24 @@ module Network.MCP.Types
   , Implementation(..)
   , InputSchema(..)
 
+  , JSONRPCRequest(..)
+
   , ListChangedCapability(..)
   , ListChangedAndSubscriptionCapabilities(..)
 
   , ListToolsRequest(..)
   , ListToolsResult(..)
 
+  , MCPError(..)
+  , MCPRequest(..)
+  , MCPResult(..)
+
   , methodInitialize
   , methodToolsCall
   , methodToolsList
   , noCapabilities
+
+  , NotificationResult(..)
 
   , Role(..)
 
@@ -54,6 +62,7 @@ import Data.Aeson.KeyMap
 import Data.Aeson.Types hiding(Result)
 import Data.Kind
 import Data.Text
+import Data.UUID
 import Data.Vector
 
 import GHC.Generics
@@ -73,6 +82,67 @@ emptyObj = Data.Aeson.KeyMap.empty
 {-----------------------------------------------------------
 -- requests & responses
 -----------------------------------------------------------}
+
+class (FromJSON q, ToJSON q) => MCPRequest q where
+  methodName :: q -> Text
+
+  mcpRequestJSON       :: (GToJSON' Value Zero (Rep q), ToJSON q) => Maybe (Either Integer Text) -> q -> Value
+  mcpRequestJSON rid q = object ([ "jsonrpc" .= ("2.0" :: Text)
+                                  , "method"  .= methodName q
+                                  , "params"  .= toJSON q
+                                  ] Prelude.++ (optionalPair "id" (fmap (either toJSON toJSON) rid)))
+
+class (FromJSON r, ToJSON r) => MCPResult r where
+  mcpResultJSON       :: (GToJSON' Value Zero (Rep r), ToJSON r) => Maybe (Either Integer Text) -> r -> Value
+  mcpResultJSON rid r = object ([ "jsonrpc" .= ("2.0" :: Text)
+                                , "result"  .= toJSON r
+                                ] Prelude.++ (optionalPair "id" (fmap (either toJSON toJSON) rid)))
+
+data MCPError = MCPError
+  { code       :: Integer
+  , message    :: Text
+  , errorData  :: Maybe Value
+  } deriving(Eq, Generic, Show)
+
+instance FromJSON MCPError where
+  parseJSON (Object o) = MCPError <$> o .: "code" <*> o .: "message" <*> o .: "data"
+  parseJSON _          = mempty
+instance ToJSON MCPError where
+  toEncoding (MCPError c m d) = pairs (  "code"    .= c
+                                      <> "message" .= m
+                                      <> "data"    .= d
+                                      )
+  toJSON     (MCPError c m d) = object [ "code"    .= c
+                                       , "message" .= m
+                                       , "data"    .= d
+                                       ]
+
+data JSONRPCRequest = JSONRPCRequest
+  { method :: Text
+  , params :: Maybe Value
+  , id     :: Maybe (Either Integer Text)
+  } deriving(Eq, Show)
+
+instance FromJSON JSONRPCRequest where
+  parseJSON (Object o) = JSONRPCRequest <$> o .: "method" <*> (o .: "params" <|> return Nothing) <*> ((o .: "id" >>= (return . Just . Left)) <|> (o .: "id" >>= (return . Just . Right)) <|> return Nothing)
+  parseJSON _          = mempty
+instance ToJSON JSONRPCRequest where
+  toEncoding (JSONRPCRequest m p i) = pairs (  "method" .= m
+                                            <> (optionalSeries "params" p)
+                                            <> (optionalSeries "id" (fmap (either (pack . show) Prelude.id) $ i))
+                                            )
+  toJSON (JSONRPCRequest m p i)     = object ([ "method" .= m
+                                              ] Prelude.++ (optionalPair "params" p)
+                                                Prelude.++ (optionalPair "id" (fmap (either (pack . show) Prelude.id) $ i)))
+
+-- vacuous MCPResult instance for JSON-RPC notifications, which are not responded to
+data NotificationResult = NotificationResult deriving(Eq, Generic, Show)
+
+instance FromJSON NotificationResult where
+  parseJSON _ = return NotificationResult
+instance ToJSON NotificationResult where
+  toJSON _ = Null
+instance MCPResult NotificationResult
 
 {---------------------------------------
 -- InitializeRequest
@@ -105,6 +175,9 @@ instance ToRequest InitializeRequest where
   requestMethod  = const methodInitialize
   requestIsNotif = const False
 
+instance MCPRequest InitializeRequest where
+  methodName = const $ methodInitialize
+
 {---------------------------------------
 -- InitializeResult
 ---------------------------------------}
@@ -132,6 +205,8 @@ instance ToJSON InitializeResult where
 instance FromResponse InitializeResult where
   parseResult = const $ Just (genericParseJSON customOptions)
 
+instance MCPResult InitializeResult
+
 {---------------------------------------
 -- InitializedNotification
 ---------------------------------------}
@@ -150,10 +225,12 @@ instance ToRequest InitializedNotification where
   requestIsNotif = const True
 
 instance FromJSON InitializedNotification where
-  parseJSON Null       = return InitializedNotification
-  parseJSON _          = mempty
+  parseJSON _ = return InitializedNotification
 instance ToJSON InitializedNotification where
   toJSON _ = Null
+
+instance MCPRequest InitializedNotification where
+  methodName = const $ methodNotificationsInitialized
 
 {---------------------------------------
 -- ListToolsRequest
@@ -188,11 +265,8 @@ data ListToolsResult = ListToolsResult
 
 instance FromJSON ListToolsResult
 instance ToJSON ListToolsResult where
-  toEncoding r = pairs ( "tools" .= getField @"tools" r )
-  toJSON r = case genericToJSON customOptions r of
-    (Object o) -> Object $ insert "tools" (Array $ genericToJSON customOptions <$> (getField @"tools" r))
-                         $ o
-    _          -> genericToJSON customOptions r
+  toEncoding = genericToEncoding customOptions
+  toJSON     = genericToJSON customOptions
 
 instance FromResponse ListToolsResult where
   parseResult = const $ Just (genericParseJSON customOptions)
@@ -213,11 +287,8 @@ instance FromJSON CallToolRequest where
   parseJSON (Object o) = CallToolRequest <$> o .: "name" <*> (o .: "arguments" <|> return Nothing)
   parseJSON _          = mempty
 instance ToJSON CallToolRequest where
-  toEncoding r = pairs (  "name"         .= getField @"name" r
-                       <> (optionalSeries "arguments" $ arguments r)
-                       )
-  toJSON q = object ([ "name"            .= getField @"name" q
-                     ] Prelude.++ (optionalPair "arguments" (arguments q)))
+  toEncoding = genericToEncoding customOptions
+  toJSON     = genericToJSON customOptions
 
 instance FromRequest CallToolRequest where
   parseParams methodToolsCall = Just parseJSON
@@ -226,6 +297,9 @@ instance FromRequest CallToolRequest where
 instance ToRequest CallToolRequest where
   requestMethod  = const methodToolsCall
   requestIsNotif = const False
+
+instance MCPRequest CallToolRequest where
+  methodName = const $ methodToolsCall
 
 {---------------------------------------
 -- CallToolResult
@@ -310,6 +384,8 @@ instance ToJSON CallToolResult where
 instance FromResponse CallToolResult where
   parseResult = const $ Just (genericParseJSON customOptions)
 
+instance MCPResult CallToolResult
+
 {-----------------------------------------------------------
 -- plain old data
 -----------------------------------------------------------}
@@ -323,6 +399,7 @@ data ClientCapabilities = ClientCapabilities
 instance FromJSON ClientCapabilities
 instance ToJSON ClientCapabilities where
   toEncoding = genericToEncoding customOptions
+  toJSON     = genericToJSON customOptions
 
 -- no experimental support
 data ServerCapabilities = ServerCapabilities

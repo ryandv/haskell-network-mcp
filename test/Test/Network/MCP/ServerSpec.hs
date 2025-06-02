@@ -59,7 +59,7 @@ instance ToJSON EchoArguments where
 
 -- TODO: annotation support
 echoHandler :: (MonadIO m, MonadLogger m) => CallToolRequest -> MCPT m (Either ToolError CallToolResult)
-echoHandler = handleToolCall (\(EchoArguments txt) -> Right $ CallToolResult (V.fromList [TextContent txt Nothing]) (Just False))
+echoHandler = handleToolCall (\(EchoArguments txt) -> return . Right $ CallToolResult (V.fromList [TextContent txt Nothing]) (Just False))
 
 spec :: Spec
 spec = describe "MCP server" $ do
