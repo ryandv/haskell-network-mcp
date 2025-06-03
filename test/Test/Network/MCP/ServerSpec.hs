@@ -67,11 +67,10 @@ echoHandler = handleToolCall (\(EchoArguments txt) -> return . Right $ CallToolR
 
 data ClientState = ClientStart | ClientInitializing | ClientOperational
 
-fuck s = do
+echoClient s = do
   st <- liftIO . atomically . readTVar $ s
   case st of
-    ClientStart        -> ((linesUnboundedAsciiC .| await) >>= (maybe (return ()) initializeResultDecoder)) >> (liftIO . atomically . swapTVar s $ ClientInitializing)
-    ClientInitializing -> (linesUnboundedAsciiC .| await) >> (linesUnboundedAsciiC .| await) >> (liftIO . atomically . swapTVar s $ ClientOperational)
+    ClientStart        -> ((linesUnboundedAsciiC .| await) >>= (maybe (return ()) initializeResultDecoder)) >> (liftIO . atomically . swapTVar s $ ClientOperational)
     ClientOperational  -> ((linesUnboundedAsciiC .| await) >>= (maybe (return ()) (callToolResultDecoder "hello world"))) >> (return ClientOperational)
   return ()
 

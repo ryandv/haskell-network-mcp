@@ -130,13 +130,13 @@ server input output ts = do
   runConduit . runReaderC ctx $ input' .| peekForeverE mainConduit
 
   where
-    mainConduit = lineAsciiC (mapMC decodeRequest) .| mapMC (liftA2 (>>) (either (const $ return ()) logRequest) handleRequest)
+    mainConduit = lineAsciiC (mapMC decodeRequest) .| mapMC (liftA2 (>>) (either (logServerError . pack . show) logRequest) handleRequest)
                                                    .| mapWhileC Prelude.id
                                                    .| mapMC (liftA2 (>>) (either (const $ return ()) logResponse) encodeResponse)
                                                    .| readerC (const output)
 
     decodeRequest :: (MonadLoggerIO m) => ByteString -> MCPT m (Either MCPError JSONRPCRequest)
-    decodeRequest = either (const $ return . Left $ MCPError (-32600) "invalid JSON-RPC 2.0 request" Nothing)
+    decodeRequest = either (return . Left . (flip (MCPError (-32600)) Nothing) . ("invalid JSON-RPC 2.0 request: " `append`) . pack)
                            (return . Right) . eitherDecodeStrict . C.strip
 
     handleRequest     :: (MonadLoggerIO m) => Either MCPError JSONRPCRequest -> MCPT m (Maybe (Either MCPError Value))
