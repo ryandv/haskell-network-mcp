@@ -8,7 +8,9 @@ module Network.MCP.Host where
 
 import Conduit
 
+import Control.Concurrent
 import Control.Concurrent.STM
+import Control.Concurrent.STM.TQueue
 import Control.Concurrent.STM.TVar
 import Control.Monad
 import Control.Monad.Trans.Class
@@ -20,7 +22,7 @@ import Control.Monad.Logger
 import Data.Aeson
 import Data.Aeson.Text
 import Data.Aeson.Types
-import Data.ByteString hiding(append, pack, toStrict)
+import Data.ByteString hiding(append, getLine, pack, toStrict)
 import Data.Conduit.Combinators hiding(print)
 import Data.Text hiding(empty)
 import Data.Text.Lazy hiding(append, empty, pack, Text)
@@ -57,25 +59,36 @@ initialContext :: ClientContext
 initialContext = ClientContext ClientStart
 
 clientWith input output = do
-  ctx <- liftIO . atomically . newTVar $ ClientContext ClientStart
+  -- prologue
+  ctx      <- liftIO . atomically . newTVar $ ClientContext ClientStart
+  q        <- liftIO . atomically $ newTQueue
+
+  initUUID <- liftIO $ nextRandom
 
   liftIO $ hSetBuffering input LineBuffering
   liftIO $ hSetBuffering output LineBuffering
 
   logWithoutLoc "Client" LevelDebug $ ("Initializing." :: Text)
 
-  let initreq = InitializeRequest { capabilities = dummyClientCaps
-                                  , clientInfo   = clientImplementation
-                                  }
+  -- user input consumer
+  liftIO . forkIO . forever $ do
+    reqs <- liftIO . atomically . flushTQueue $ q
+    runConduit $ yieldMany reqs .| sinkHandle input
 
-  initUUID <- liftIO $ nextRandom
+  -- user input producer
+  liftIO . forkIO . forever $ do
+    ln <- getLine
+    liftIO . atomically . writeTQueue q . C.pack $ ln
 
+  -- mcp init
+  let initreq = InitializeRequest dummyClientCaps clientImplementation
   let initReqJSON = (flip C.snoc $ '\n') . L.toStrict . encode $ mcpRequestJSON (Just . Right $ toText initUUID) initreq
 
-  runConduit $ yieldMany [initReqJSON] .| sinkHandle input
+  liftIO . atomically . writeTQueue q $ initReqJSON
   logWithoutLoc "Client" LevelDebug $ ("Sent InitializeRequest." :: Text)
 
   runConduit . runReaderC ctx $ sourceHandle output .| peekForeverE (mainConduit input output)
+
   where
     mainConduit input output = lineAsciiC (mapMC decodeResponse) .| mapMC (liftA2 (>>) (either (const $ return ()) logResponse) handleResponse)
                                                                  .| mapWhileC Prelude.id
@@ -88,21 +101,24 @@ clientWith input output = do
     handleResponse     :: (MonadLoggerIO m) => Either Text Value -> MCPClientT m (Maybe (Either Text Value))
     handleResponse res = do
       ctx <- ask
-      st  <- fmap currentState . liftIO . atomically . readTVar $ ctx
       rid <- liftIO $ nextRandom
 
       case res of
         (Left e)  -> (liftIO . print $ "Failed to decode JSON response: " `append` e) >> return Nothing
-        (Right r) -> case st of
-          ClientStart       -> handleWith initializeResultHandler rid r
-          ClientOperational -> undefined
+        (Right r) -> liftIO . atomically $ do
+          c <- readTVar $ ctx
 
-    handleWith       :: (GToJSON' Value Zero (Rep q), MCPRequest q, MCPResult r, MonadLoggerIO m) => (r -> MCPClientT m (Maybe (Either Text q))) -> UUID -> (Value -> MCPClientT m (Maybe (Either Text Value)))
-    handleWith h rid = either (return . Just . Left . ("Failed to decode MCP response: " `append`) . pack)
-                              (h >=> return . fmap (either Left (Right . mcpRequestJSON (Just . Right $ toText rid)))) . parseEither (withObject "MCP Response" (.: "result"))
+          case currentState c of
+            ClientStart       -> (swapTVar ctx $ c { currentState = ClientOperational }) >> (return $ handleWith initializeResultHandler rid r)
+            ClientOperational -> return Nothing
 
-    initializeResultHandler     :: (MonadLoggerIO m) => InitializeResult -> MCPClientT m (Maybe (Either Text InitializedNotification))
-    initializeResultHandler res = return . Just . Right $ InitializedNotification
+    handleWith       :: (GToJSON' Value Zero (Rep q), MCPRequest q, MCPResult r) => (r -> Maybe (Either Text q)) -> UUID -> (Value -> Maybe (Either Text Value))
+    handleWith h rid = either (Just . Left . ("Failed to decode MCP response: " `append`) . pack)
+                              (fmap (either Left (Right . mcpRequestJSON (Just . Right $ toText rid))) . h) . parseEither (withObject "MCP Response" (.: "result"))
+                            --(h >=> fmap (either Left (Right . mcpRequestJSON (Just . Right $ toText rid))))
+
+    initializeResultHandler     :: InitializeResult -> Maybe (Either Text InitializedNotification)
+    initializeResultHandler res = Just . Right $ InitializedNotification
 
     logRequest    :: (MonadLoggerIO m, ToJSON q) => q -> MCPClientT m ()
     logRequest    = lift . logWithoutLoc "Client" LevelDebug . ("Sending request: " `append`) . toStrict . encodeToLazyText
