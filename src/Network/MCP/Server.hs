@@ -104,7 +104,7 @@ toolBuilder n d args h = ToolCallHandler tl (h >=> either (return . mapError) (r
 
 initialState                :: [ToolCallHandler m] -> ServerContext m
 initialState ts | null ts   = ServerContext ServerStart Nothing noCapabilities (fromList ts)
-                   | otherwise = ServerContext ServerStart Nothing (noCapabilities { tools = Just $ ListChangedCapability False }) (fromList ts)
+                | otherwise = ServerContext ServerStart Nothing (noCapabilities { tools = Just $ ListChangedCapability False }) (fromList ts)
 
 stdioServer :: (MonadLoggerIO m)
             => [ToolCallHandler m]
