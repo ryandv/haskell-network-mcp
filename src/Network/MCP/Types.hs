@@ -123,14 +123,18 @@ data JSONRPCRequest = JSONRPCRequest
 instance FromJSON JSONRPCRequest where
   parseJSON (Object o) = (o .: "jsonrpc" >>= (\j -> (guard (j == ("2.0" :: Text))) >> JSONRPCRequest <$> o .: "method" <*> (o .: "params" <|> return Nothing) <*> ((o .: "id" >>= (return . Just . Left)) <|> (o .: "id" >>= (return . Just . Right)) <|> return Nothing))) <|> mempty
   parseJSON _          = mempty
+
 instance ToJSON JSONRPCRequest where
-  toEncoding (JSONRPCRequest m p i) = pairs (  "method" .= m
+  toEncoding (JSONRPCRequest m p i) = pairs (  "method"  .= m
+                                            <> "jsonrpc" .= ("2.0" :: Text)
                                             <> (optionalSeries "params" p)
-                                            <> (optionalSeries "id" (fmap (either (pack . show) Prelude.id) $ i))
+                                            <> (optionalSeries "id" (fmap (either (Number . fromInteger) String) $ i))
                                             )
-  toJSON (JSONRPCRequest m p i)     = object ([ "method" .= m
+
+  toJSON     (JSONRPCRequest m p i) = object ([ "method"  .= m
+                                              , "jsonrpc" .= ("2.0" :: Text)
                                               ] Prelude.++ (optionalPair "params" p)
-                                                Prelude.++ (optionalPair "id" (fmap (either (pack . show) Prelude.id) $ i)))
+                                                Prelude.++ (optionalPair "id" (fmap (either (Number . fromInteger) String) $ i)))
 
 -- vacuous MCPResult instance for JSON-RPC notifications, which are not responded to
 data NotificationResult = NotificationResult deriving(Eq, Generic, Show)

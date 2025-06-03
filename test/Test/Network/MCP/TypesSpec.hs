@@ -29,6 +29,18 @@ spec = context "json marshalling" $ do
   let uuid       = Just $ Right "550e8400-e29b-41d4-a716-446655440000"
 
   context "JSON-RPC" $ do
+    describe "JSONRPCRequest encoding" $ do
+      it "encodes" $ do
+        let subject = JSONRPCRequest { method = "initialize"
+                                     , params = Just $ object [ "capabilities" .= object []
+                                                              , "clientInfo"   .= object [ "name" .= ("test" :: T.Text), "version" .= ("1" :: T.Text) ]
+                                                              , "protocolVersion" .= ("2025-03-26" :: T.Text)
+                                                              ]
+                                     , id = Just $ Left 1
+                                     }
+        let marshalled = encode subject
+
+        marshalled `shouldBe` "{\"method\":\"initialize\",\"jsonrpc\":\"2.0\",\"params\":{\"capabilities\":{},\"clientInfo\":{\"name\":\"test\",\"version\":\"1\"},\"protocolVersion\":\"2025-03-26\"},\"id\":1}"
     describe "JSONRPCRequest decoding" $ do
       it "decodes" $ do
         let example = "{\"id\":1,\"jsonrpc\":\"2.0\",\"method\":\"initialize\",\"params\":{\"capabilities\":{},\"clientInfo\":{\"name\":\"test\",\"version\":\"1\"},\"protocolVersion\":\"2025-03-26\"}}"
