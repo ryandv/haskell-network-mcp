@@ -23,7 +23,7 @@ import Data.Aeson
 import Data.Aeson.Text
 import Data.Aeson.Types
 import Data.ByteString hiding(append, getLine, pack, toStrict)
-import Data.Conduit.Combinators hiding(print)
+import Data.Conduit.Combinators hiding(mapM, print)
 import Data.Text hiding(empty)
 import Data.Text.Lazy hiding(append, empty, pack, Text)
 import Data.UUID
@@ -59,7 +59,7 @@ initialContext :: ClientContext
 initialContext = ClientContext ClientStart
 
 clientWith :: (MonadLoggerIO m, MonadUnliftIO m)
-           => (ByteString -> ByteString)
+           => (ByteString -> IO ByteString)
            -> Handle
            -> Handle
            -> m ()
@@ -78,7 +78,8 @@ clientWith userInputHandler input output = do
   -- user input consumer
   liftIO . forkIO . forever $ do
     reqs <- liftIO . atomically . flushTQueue $ q
-    runConduit $ yieldMany (userInputHandler <$> reqs) .| sinkHandle input
+    processedReqs <- mapM userInputHandler reqs
+    runConduit $ yieldMany processedReqs .| sinkHandle input
 
   -- user input producer
   liftIO . forkIO . forever $ do
@@ -89,7 +90,7 @@ clientWith userInputHandler input output = do
   let initreq = InitializeRequest dummyClientCaps clientImplementation
   let initReqJSON = (flip C.snoc $ '\n') . L.toStrict . encode $ mcpRequestJSON (Just . Right $ toText initUUID) initreq
 
-  liftIO . atomically . writeTQueue q $ initReqJSON
+  runConduit $ yieldMany [initReqJSON] .| sinkHandle input
   logWithoutLoc "Client" LevelDebug $ ("Sent InitializeRequest." :: Text)
 
   runConduit . runReaderC ctx $ sourceHandle output .| peekForeverE (mainConduit input output)
@@ -134,7 +135,7 @@ clientWith userInputHandler input output = do
 
 client       :: (MonadLoggerIO m, MonadUnliftIO m)
              => CreateProcess
-             -> (ByteString -> ByteString)
+             -> (ByteString -> IO ByteString)
              -> MCPClientT m ()
              -> m ()
 client p f m = do
