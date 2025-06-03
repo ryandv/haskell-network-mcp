@@ -112,7 +112,7 @@ spec = describe "MCP server" $ do
                                  echoHandler
 
     s <- liftIO . atomically . newTVar $ ClientStart
-    liftIO . runNoLoggingT $ server input (fuck s) [ echoConfig ]
+    liftIO . runNoLoggingT $ server input (echoClient s) [ echoConfig ]
 
     -- TODO: strengthen expectation in light of above note
     True `shouldBe` True

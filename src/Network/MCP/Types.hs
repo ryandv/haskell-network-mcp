@@ -86,9 +86,9 @@ class (FromJSON q, ToJSON q) => MCPRequest q where
 
   mcpRequestJSON       :: (GToJSON' Value Zero (Rep q), ToJSON q) => Maybe (Either Integer Text) -> q -> Value
   mcpRequestJSON rid q = object ([ "jsonrpc" .= ("2.0" :: Text)
-                                  , "method"  .= methodName q
-                                  ] Prelude.++ (optionalPair "params" (if toJSON q == Null then Nothing else Just (toJSON q)))
-                                    Prelude.++ (optionalPair "id" (fmap (either toJSON toJSON) rid)))
+                                 , "method"  .= methodName q
+                                 ] Prelude.++ (optionalPair "params" (if toJSON q == Null then Nothing else Just (toJSON q)))
+                                   Prelude.++ (optionalPair "id" (fmap (either toJSON toJSON) rid)))
 
 class (FromJSON r, ToJSON r) => MCPResult r where
   mcpResultJSON       :: (GToJSON' Value Zero (Rep r), ToJSON r) => Maybe (Either Integer Text) -> r -> Value
@@ -121,7 +121,7 @@ data JSONRPCRequest = JSONRPCRequest
   } deriving(Eq, Show)
 
 instance FromJSON JSONRPCRequest where
-  parseJSON (Object o) = JSONRPCRequest <$> o .: "method" <*> (o .: "params" <|> return Nothing) <*> ((o .: "id" >>= (return . Just . Left)) <|> (o .: "id" >>= (return . Just . Right)) <|> return Nothing)
+  parseJSON (Object o) = (o .: "jsonrpc" >>= (\j -> (guard (j == ("2.0" :: Text))) >> JSONRPCRequest <$> o .: "method" <*> (o .: "params" <|> return Nothing) <*> ((o .: "id" >>= (return . Just . Left)) <|> (o .: "id" >>= (return . Just . Right)) <|> return Nothing))) <|> mempty
   parseJSON _          = mempty
 instance ToJSON JSONRPCRequest where
   toEncoding (JSONRPCRequest m p i) = pairs (  "method" .= m

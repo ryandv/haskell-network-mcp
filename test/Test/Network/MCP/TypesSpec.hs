@@ -9,6 +9,7 @@ import Control.Monad.IO.Class
 import Data.Aeson
 import Data.Aeson.Text
 import Data.Aeson.Types
+import Data.Either
 import Data.Maybe
 import Data.UUID
 import Data.UUID.V4
@@ -22,7 +23,6 @@ import Network.MCP.Types
 
 import Test.Hspec
 
--- because aeson's generics are inscrutable in combination with Network.JSONRPC...
 spec :: Spec
 spec = context "json marshalling" $ do
   let implementation = Implementation "haskell-network-mcp-test" "v0.0.0.1"
@@ -44,6 +44,14 @@ spec = context "json marshalling" $ do
         let decoded = d example
 
         decoded `shouldBe` (Right expected)
+
+      it "fails to decode requests missing the jsonrpc 2.0 property" $ do
+        let example = "{\"id\":1,\"method\":\"initialize\",\"params\":{\"capabilities\":{},\"clientInfo\":{\"name\":\"test\",\"version\":\"1\"},\"protocolVersion\":\"2025-03-26\"}}"
+        let d = eitherDecodeStrictText :: T.Text -> Either String JSONRPCRequest
+
+        let decoded = d example
+
+        isLeft decoded `shouldBe` True
 
   describe "InitializeRequest encoding" $ do
     let clientCaps = ClientCapabilities Nothing Nothing
