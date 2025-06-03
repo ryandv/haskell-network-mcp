@@ -58,7 +58,12 @@ type MCPClientT m = ReaderT (TVar ClientContext) m
 initialContext :: ClientContext
 initialContext = ClientContext ClientStart
 
-clientWith input output = do
+clientWith :: (MonadLoggerIO m, MonadUnliftIO m)
+           => (ByteString -> ByteString)
+           -> Handle
+           -> Handle
+           -> m ()
+clientWith userInputHandler input output = do
   -- prologue
   ctx      <- liftIO . atomically . newTVar $ ClientContext ClientStart
   q        <- liftIO . atomically $ newTQueue
@@ -73,7 +78,7 @@ clientWith input output = do
   -- user input consumer
   liftIO . forkIO . forever $ do
     reqs <- liftIO . atomically . flushTQueue $ q
-    runConduit $ yieldMany reqs .| sinkHandle input
+    runConduit $ yieldMany (userInputHandler <$> reqs) .| sinkHandle input
 
   -- user input producer
   liftIO . forkIO . forever $ do
@@ -115,7 +120,6 @@ clientWith input output = do
     handleWith       :: (GToJSON' Value Zero (Rep q), MCPRequest q, MCPResult r) => (r -> Maybe (Either Text q)) -> UUID -> (Value -> Maybe (Either Text Value))
     handleWith h rid = either (Just . Left . ("Failed to decode MCP response: " `append`) . pack)
                               (fmap (either Left (Right . mcpRequestJSON (Just . Right $ toText rid))) . h) . parseEither (withObject "MCP Response" (.: "result"))
-                            --(h >=> fmap (either Left (Right . mcpRequestJSON (Just . Right $ toText rid))))
 
     initializeResultHandler     :: InitializeResult -> Maybe (Either Text InitializedNotification)
     initializeResultHandler res = Just . Right $ InitializedNotification
@@ -128,11 +132,12 @@ clientWith input output = do
     encodeRequest :: (MonadLoggerIO m, ToJSON q) => Either Text q -> MCPClientT m ByteString
     encodeRequest = either (liftIO . print . ("error: " `append`) >=> (const $ return empty)) (return . (flip C.snoc $ '\n') . L.toStrict . encode)
 
-client     :: (MonadLoggerIO m, MonadUnliftIO m)
-           => CreateProcess
-           -> MCPClientT m ()
-           -> m ()
-client p m = do
+client       :: (MonadLoggerIO m, MonadUnliftIO m)
+             => CreateProcess
+             -> (ByteString -> ByteString)
+             -> MCPClientT m ()
+             -> m ()
+client p f m = do
   errHdl <- liftIO $ openFile "/tmp/wat.log" WriteMode
   (min, mout, merr, h) <- liftIO $ createProcess p { std_in  = CreatePipe
                                                    , std_out = CreatePipe
@@ -141,4 +146,4 @@ client p m = do
   let handles = min >>= (\input -> mout >>= (\out -> return (input, out)))
   maybe (return ()) (liftIO . (flip hSetBuffering $ LineBuffering)) merr
 
-  maybe (return ()) (uncurry clientWith) handles
+  maybe (return ()) (uncurry (clientWith f)) handles
