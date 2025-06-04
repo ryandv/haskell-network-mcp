@@ -66,7 +66,6 @@ clientWith :: (MonadLoggerIO m, MonadUnliftIO m)
 clientWith userInputHandler input output = do
   -- prologue
   ctx      <- liftIO . atomically . newTVar $ ClientContext ClientStart
-  q        <- liftIO . atomically $ newTQueue
 
   initUUID <- liftIO $ nextRandom
 
@@ -75,16 +74,11 @@ clientWith userInputHandler input output = do
 
   logWithoutLoc "Client" LevelDebug $ ("Initializing." :: Text)
 
-  -- user input consumer
+  -- user input thread
   liftIO . forkIO . forever $ do
-    reqs <- liftIO . atomically . flushTQueue $ q
-    processedReqs <- mapM userInputHandler reqs
-    runConduit $ yieldMany processedReqs .| sinkHandle input
-
-  -- user input producer
-  liftIO . forkIO . forever $ do
-    ln <- getLine
-    liftIO . atomically . writeTQueue q . C.pack $ ln
+    ln           <- getLine
+    processedReq <- userInputHandler $ C.pack ln
+    runConduit $ yieldMany [processedReq] .| sinkHandle input
 
   -- mcp init
   let initreq = InitializeRequest dummyClientCaps clientImplementation
