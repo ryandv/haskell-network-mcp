@@ -1,11 +1,14 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeApplications #-}
 
 module Network.MCP.Host
-  ( clientWith
+  ( ClientRequest(..)
+
+  , clientWith
   , client
   ) where
 
@@ -13,6 +16,7 @@ import Conduit
 
 import Control.Concurrent
 import Control.Concurrent.STM
+import Control.Concurrent.STM.TQueue
 import Control.Monad
 import Control.Monad.Trans.Reader
 import Control.Monad.Logger
@@ -50,16 +54,17 @@ data ClientContext = ClientContext
   }
 
 type MCPClientT m = ReaderT (TVar ClientContext) m
+data ClientRequest = forall q. (GToJSON' Value Zero (Rep q), MCPRequest q) => ClientRequest q
 
 initialContext :: ClientContext
 initialContext = ClientContext ClientStart
 
 clientWith :: (MonadLoggerIO m)
-           => (ByteString -> IO ByteString)
+           => TQueue ClientRequest
            -> Handle
            -> Handle
            -> m ()
-clientWith userInputHandler input output = do
+clientWith reqs input output = do
   -- prologue
   ctx      <- liftIO . atomically . newTVar $ initialContext
 
@@ -72,9 +77,12 @@ clientWith userInputHandler input output = do
 
   -- user input thread
   _ <- liftIO . forkIO . forever $ do
-    ln           <- getLine
-    processedReq <- userInputHandler $ C.pack ln
-    runConduit $ yieldMany [processedReq] .| sinkHandle input
+    qs     <- liftIO . atomically . flushTQueue  $ reqs
+    ids    <- liftIO . mapM (const $ nextRandom) $ qs
+
+    let bs = L.toStrict . encode . encodeClientRequests <$> Prelude.zip ids qs
+
+    runConduit $ yieldMany bs .| sinkHandle input
 
   -- mcp init
   let initreq = InitializeRequest dummyClientCaps clientImplementation
@@ -83,13 +91,13 @@ clientWith userInputHandler input output = do
   runConduit $ yieldMany [initReqJSON] .| sinkHandle input
   logWithoutLoc "Client" LevelDebug $ ("Sent InitializeRequest." :: Text)
 
-  runConduit . runReaderC ctx $ sourceHandle output .| peekForeverE (mainConduit input)
+  runConduit . runReaderC ctx $ sourceHandle output .| peekForeverE mainConduit
 
   where
-    mainConduit i = lineAsciiC (mapMC decodeResponse) .| mapMC (liftA2 (>>) (either (const $ return ()) logResponse) handleResponse)
-                                                      .| mapWhileC Prelude.id
-                                                      .| mapMC (liftA2 (>>) (either (const $ return ()) logRequest) encodeRequest)
-                                                      .| readerC (const $ sinkHandle i)
+    mainConduit = lineAsciiC (mapMC decodeResponse) .| mapMC (liftA2 (>>) (either (const $ return ()) logResponse) handleResponse)
+                                                    .| mapWhileC Prelude.id
+                                                    .| mapMC (liftA2 (>>) (either (const $ return ()) logRequest) encodeRequest)
+                                                    .| readerC (const $ sinkHandle input)
 
     decodeResponse :: (MonadLoggerIO m) => ByteString -> MCPClientT m (Either Text Value)
     decodeResponse = either (return . Left . pack) (return . Right) . eitherDecodeStrict . C.strip
@@ -129,18 +137,19 @@ clientWith userInputHandler input output = do
     encodeRequest :: (MonadLoggerIO m, ToJSON q) => Either Text q -> MCPClientT m ByteString
     encodeRequest = either (liftIO . print . ("error: " `append`) >=> (const $ return empty)) (return . (flip C.snoc $ '\n') . L.toStrict . encode)
 
-client       :: (MonadLoggerIO m)
-             => CreateProcess
-             -> (ByteString -> IO ByteString)
-             -> MCPClientT m ()
-             -> m ()
-client p f _ = do
-  errHdl <- liftIO $ openFile "/tmp/wat.log" WriteMode
+    encodeClientRequests                        :: (UUID, ClientRequest) -> Value
+    encodeClientRequests (i, (ClientRequest q)) = mcpRequestJSON (Just . Right $ toText i) q
+
+client :: (MonadLoggerIO m) => CreateProcess
+                            -> TQueue ClientRequest
+                            -> MCPClientT m ()
+                            -> m ()
+client p q _ = do
   (svin, svout, sverr, _h) <- liftIO $ createProcess p { std_in  = CreatePipe
-                                                    , std_out = CreatePipe
-                                                    , std_err = UseHandle errHdl
-                                                    }
+                                                       , std_out = CreatePipe
+                                                       , std_err = UseHandle stderr
+                                                       }
   let handles = svin >>= (\input -> svout >>= (\out -> return (input, out)))
   maybe (return ()) (liftIO . (flip hSetBuffering $ LineBuffering)) sverr
 
-  maybe (return ()) (uncurry (clientWith f)) handles
+  maybe (return ()) (uncurry (clientWith q)) handles

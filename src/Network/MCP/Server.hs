@@ -151,7 +151,7 @@ server input output toolCallHandlers = do
                         |                   otherwise = return . Just . Right $ object [] -- TODO: fill in stub
 
     handleWith     :: (GToJSON' Value Zero (Rep r), MCPRequest q, MCPResult r, MonadLoggerIO m)
-                   => (q -> MCPT m (Maybe (Either MCPError r)))
+                   => (q              -> MCPT m (Maybe (Either MCPError r)))
                    -> (JSONRPCRequest -> MCPT m (Maybe (Either MCPError Value)))
     handleWith h q = either (const $ (return . Just . Left $ invalidParams)) handle . parseEither parseJSON . reqParams $ q
       where invalidParams = MCPError (-32602) "invalid parameters for request" Nothing
