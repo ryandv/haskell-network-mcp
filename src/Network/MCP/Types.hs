@@ -1,3 +1,5 @@
+{-# OPTIONS -Wno-redundant-constraints -Wno-unused-imports #-}
+
 {-# LANGUAGE ConstrainedClassMethods #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
@@ -60,9 +62,7 @@ import Control.Monad
 
 import Data.Aeson.KeyMap
 import Data.Aeson.Types hiding(Result)
-import Data.Kind
 import Data.Text
-import Data.UUID
 import Data.Vector
 
 import GHC.Generics
@@ -189,7 +189,7 @@ instance ToJSON InitializeResult where
                        <> (optionalSeries "instructions" $ instructions r)
                        )
   toJSON r = case genericToJSON customOptions r of
-    (Object o) -> object ([ "protocolVersion" .= protocolVersion
+    (Object _) -> object ([ "protocolVersion" .= protocolVersion
                           , "capabilities"    .= (genericToJSON customOptions (getField @"capabilities" r))
                           , "serverInfo"      .= (genericToJSON customOptions (serverInfo r))
                           ] Prelude.++ (optionalPair "instructions" (instructions r)))
@@ -344,7 +344,7 @@ instance ToJSON CallToolResult where
                        <> (optionalSeries "isError" $ isError r)
                        )
   toJSON r = case genericToJSON customOptions r of
-    (Object o) -> object ([ "content" .= getField @"content" r
+    (Object _) -> object ([ "content" .= getField @"content" r
                           ] Prelude.++ (optionalPair "isError" (isError r)))
     _          -> genericToJSON customOptions r
 

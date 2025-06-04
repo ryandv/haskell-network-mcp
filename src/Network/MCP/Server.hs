@@ -11,6 +11,12 @@ module Network.MCP.Server
   , ToolArgumentDescriptor(..)
 
   , handleToolCall
+
+  , logServerDebug
+  , logServerError
+  , logServerInfo
+  , logServerWarn
+
   , server
   , stdioServer
   , toolBuilder
@@ -23,15 +29,9 @@ import Conduit
 
 import Control.Concurrent.STM.TVar
 
-import Control.Applicative hiding(empty)
 import Control.Monad
-import Control.Monad.Reader(MonadReader)
 import Control.Monad.STM
-import Control.Monad.Trans.Class
 import Control.Monad.Trans.Reader
-import Control.Monad.Trans.State.Strict
-import Control.Monad.IO.Class
-import Control.Monad.IO.Unlift
 import Control.Monad.Logger
 
 import GHC.Generics
@@ -42,18 +42,13 @@ import Data.Aeson.Text
 import Data.Aeson.Types
 import Data.Aeson.Key
 import Data.ByteString(ByteString, empty)
-import Data.Conduit
 import Data.Conduit.Combinators hiding(find, null, print)
-import Data.Conduit.Network
-import Data.HashMap.Strict hiding(empty, foldr, fromList, null)
-import Data.Maybe
 import Data.Text hiding(empty, find, foldr, null)
 import Data.Text.Lazy hiding(append, empty, find, foldr, null, pack, Text, unpack)
 import Data.Vector hiding(empty, null)
 import qualified Data.Aeson.KeyMap as M
 import qualified Data.ByteString.Lazy as B
 import qualified Data.ByteString.Char8 as C
-import qualified Data.UUID as UUID
 
 import Network.MCP.Types
 
@@ -109,23 +104,22 @@ initialState ts | null ts   = ServerContext ServerStart Nothing noCapabilities (
 stdioServer :: (MonadLoggerIO m)
             => [ToolCallHandler m]
             -> m ()
-stdioServer ts = do
-  liftIO . SIO.hPrint SIO.stderr $ "Server starting."
+stdioServer toolCallHandlers = do
+  liftIO . SIO.hPrint SIO.stderr $ ("Server starting." :: String)
   liftIO $ SIO.hSetBuffering SIO.stdin SIO.LineBuffering
   liftIO $ SIO.hSetBuffering SIO.stdout SIO.LineBuffering
   liftIO $ SIO.hSetBuffering SIO.stderr SIO.LineBuffering
-  server stdin stdout ts
-  liftIO . SIO.hPrint SIO.stderr $ "Server exiting."
+  server stdin stdout toolCallHandlers
+  liftIO . SIO.hPrint SIO.stderr $ ("Server exiting." :: String)
 
-server :: (MonadLoggerIO m)
-          => ConduitT () ByteString m ()
-          -> ConduitT ByteString Void m ()
-          -> [ToolCallHandler m]
-          -> m ()
-server input output ts = do
+server :: (MonadLoggerIO m) => ConduitT () ByteString m ()
+                            -> ConduitT ByteString Void m ()
+                            -> [ToolCallHandler m]
+                            -> m ()
+server input output toolCallHandlers = do
   let input' = readerC $ const input
 
-  ctx <- liftIO . atomically . newTVar $ initialState ts
+  ctx <- liftIO . atomically . newTVar $ initialState toolCallHandlers
 
   runConduit . runReaderC ctx $ input' .| peekForeverE mainConduit
 
@@ -142,11 +136,11 @@ server input output ts = do
     handleRequest     :: (MonadLoggerIO m) => Either MCPError JSONRPCRequest -> MCPT m (Maybe (Either MCPError Value))
     handleRequest req = do
       ctx <- ask
-      state <- fmap currentState . liftIO . atomically . readTVar $ ctx
+      st  <- fmap currentState . liftIO . atomically . readTVar $ ctx
 
       case req of
         (Left e)  -> return . Just $ Left e
-        (Right q) -> case state of
+        (Right q) -> case st of
           ServerStart        -> handleWith initializeRequestHandler q
           ServerInitializing -> handleWith initializedNotificationHandler q
           ServerOperational  -> serverMainHandler q
@@ -154,15 +148,14 @@ server input output ts = do
     serverMainHandler :: (MonadLoggerIO m) => JSONRPCRequest -> MCPT m (Maybe (Either MCPError Value))
     serverMainHandler q | method q == methodToolsList = handleWith listToolsRequestHandler q
                         | method q == methodToolsCall = handleWith callToolRequestHandler q
-                        |                   otherwise = return . Just . Right $ object []
+                        |                   otherwise = return . Just . Right $ object [] -- TODO: fill in stub
 
-    -- TODO: brutal. extract type synonyms
     handleWith     :: (GToJSON' Value Zero (Rep r), MCPRequest q, MCPResult r, MonadLoggerIO m)
                    => (q -> MCPT m (Maybe (Either MCPError r)))
                    -> (JSONRPCRequest -> MCPT m (Maybe (Either MCPError Value)))
-    handleWith h q = either (const $ (return . Just . Left $ invalidParams)) (handle h) . parseEither parseJSON . reqParams $ q
+    handleWith h q = either (const $ (return . Just . Left $ invalidParams)) handle . parseEither parseJSON . reqParams $ q
       where invalidParams = MCPError (-32602) "invalid parameters for request" Nothing
-            handle h      = h >=> return . fmap (either Left (Right . mcpResultJSON (id q)))
+            handle        = h >=> return . fmap (either Left (Right . mcpResultJSON (id q)))
             reqParams     = maybe (Object M.empty) Prelude.id . params
 
     initializeRequestHandler     :: (MonadLoggerIO m) => InitializeRequest -> MCPT m (Maybe (Either MCPError InitializeResult))
@@ -181,15 +174,15 @@ server input output ts = do
           , instructions = Nothing
           }
 
-    initializedNotificationHandler     :: (MonadLoggerIO m) => InitializedNotification -> MCPT m (Maybe (Either MCPError NotificationResult))
-    initializedNotificationHandler req = do
+    initializedNotificationHandler   :: (MonadLoggerIO m) => InitializedNotification -> MCPT m (Maybe (Either MCPError NotificationResult))
+    initializedNotificationHandler _ = do
       ctx <- ask
       logServerDebug "Initialized."
       liftIO . atomically $ modifyTVar ctx (\s -> s { currentState = ServerOperational })
       return Nothing
 
-    listToolsRequestHandler     :: (MonadLoggerIO m) => ListToolsRequest -> MCPT m (Maybe (Either MCPError ListToolsResult))
-    listToolsRequestHandler req = do
+    listToolsRequestHandler   :: (MonadLoggerIO m) => ListToolsRequest -> MCPT m (Maybe (Either MCPError ListToolsResult))
+    listToolsRequestHandler _ = do
       ctx <- ask
       ts <- fmap serverTools . liftIO . atomically . readTVar $ ctx
 
@@ -230,6 +223,6 @@ logServerWarn  = logServer LevelWarn
 logServerInfo  :: (MonadLoggerIO m) => Text -> MCPT m ()
 logServerInfo  = logServer LevelInfo
 
-handleToolCall     :: (FromJSON r, MonadIO m, MonadLogger m) => (r -> MCPT m (Either ToolError CallToolResult)) -> (CallToolRequest -> MCPT m (Either ToolError CallToolResult))
+handleToolCall     :: (FromJSON r, MonadIO m) => (r -> MCPT m (Either ToolError CallToolResult)) -> (CallToolRequest -> MCPT m (Either ToolError CallToolResult))
 handleToolCall h r = either (return . Left . ArgumentError . pack) h . parseEither parseJSON
                                                                      $ maybe (Object M.empty) Prelude.id (fmap Object (arguments r))
