@@ -10,6 +10,8 @@ module Network.MCP.Server
   , ToolError(..)
   , ToolArgumentDescriptor(..)
 
+  , defaultRequestHandlers
+
   , handleToolCall
 
   , logServerDebug
@@ -47,6 +49,7 @@ import Data.Text hiding(empty, find, foldr, null)
 import Data.Text.Lazy hiding(append, empty, find, foldr, null, pack, Text, unpack)
 import Data.Vector hiding(empty, null)
 import qualified Data.Aeson.KeyMap as M
+import qualified Data.HashMap.Strict as H
 import qualified Data.ByteString.Lazy as B
 import qualified Data.ByteString.Char8 as C
 
@@ -79,6 +82,10 @@ data ToolArgumentDescriptor = ToolArgumentDescriptor
 data ToolError = ArgumentError Text | ExecutionError Text
 
 type MCPT m = ReaderT (TVar (ServerContext m)) m
+data RequestHandler m = forall q r. (GToJSON' Value Zero (Rep r), MCPRequest q, MCPResult r, MonadLoggerIO m ) => RequestHandler
+  { requestMethod  :: Text
+  , requestHandler :: q -> MCPT m (Maybe (Either MCPError r))
+  }
 
 -- TODO: tool annotations
 toolBuilder            :: (Monad m)
@@ -101,40 +108,62 @@ initialState                :: [ToolCallHandler m] -> ServerContext m
 initialState ts | null ts   = ServerContext ServerStart Nothing noCapabilities (fromList ts)
                 | otherwise = ServerContext ServerStart Nothing (noCapabilities { tools = Just $ ListChangedCapability False }) (fromList ts)
 
+defaultRequestHandlers :: (MonadLoggerIO m) => [RequestHandler m]
+defaultRequestHandlers = [RequestHandler methodToolsList listToolsRequestHandler, RequestHandler methodToolsCall callToolRequestHandler]
+
 stdioServer :: (MonadLoggerIO m)
             => [ToolCallHandler m]
+            -> [RequestHandler m]
             -> m ()
-stdioServer toolCallHandlers = do
+stdioServer toolCallHandlers requestHandlers = do
   liftIO . SIO.hPrint SIO.stderr $ ("Server starting." :: String)
   liftIO $ SIO.hSetBuffering SIO.stdin SIO.LineBuffering
   liftIO $ SIO.hSetBuffering SIO.stdout SIO.LineBuffering
   liftIO $ SIO.hSetBuffering SIO.stderr SIO.LineBuffering
-  server stdin stdout toolCallHandlers
+  server stdin stdout toolCallHandlers requestHandlers
   liftIO . SIO.hPrint SIO.stderr $ ("Server exiting." :: String)
+
+listToolsRequestHandler   :: (MonadLoggerIO m) => ListToolsRequest -> MCPT m (Maybe (Either MCPError ListToolsResult))
+listToolsRequestHandler _ = do
+  ctx <- ask
+  ts <- fmap serverTools . liftIO . atomically . readTVar $ ctx
+
+  return . Just . Right $ ListToolsResult (tool <$> ts)
+
+-- TODO: response content types other than just text
+callToolRequestHandler     :: (MonadLoggerIO m) => CallToolRequest -> MCPT m (Maybe (Either MCPError CallToolResult))
+callToolRequestHandler req = do
+  ctx <- ask
+  ts <- fmap serverTools . liftIO . atomically . readTVar $ ctx
+
+  result <- maybe (return . Left $ MCPError (-32602) ("Unknown tool: " `append` (getField @"name" req)) Nothing) (return . Right . ($ req) . handler) $ find ((== getField @"name" req) . getField @"name" . tool) ts
+  either (return . Just . Left) (fmap Just) result
 
 server :: (MonadLoggerIO m) => ConduitT () ByteString m ()
                             -> ConduitT ByteString Void m ()
                             -> [ToolCallHandler m]
+                            -> [RequestHandler m]
                             -> m ()
-server input output toolCallHandlers = do
+server input output toolCallHandlers requestHandlers = do
   let input' = readerC $ const input
+  let handlersByMethod = H.fromList . fmap (liftA2 (,) requestMethod Prelude.id) $ requestHandlers
 
   ctx <- liftIO . atomically . newTVar $ initialState toolCallHandlers
 
-  runConduit . runReaderC ctx $ input' .| peekForeverE mainConduit
+  runConduit . runReaderC ctx $ input' .| peekForeverE (mainConduit handlersByMethod)
 
   where
-    mainConduit = lineAsciiC (mapMC decodeRequest) .| mapMC (liftA2 (>>) (either (logServerError . pack . show) logRequest) handleRequest)
-                                                   .| mapWhileC Prelude.id
-                                                   .| mapMC (liftA2 (>>) (either (const $ return ()) logResponse) encodeResponse)
-                                                   .| readerC (const output)
+    mainConduit handlersByMethod = lineAsciiC (mapMC decodeRequest) .| mapMC (liftA2 (>>) (either (logServerError . pack . show) logRequest) (handleRequest handlersByMethod))
+                                                                    .| mapWhileC Prelude.id
+                                                                    .| mapMC (liftA2 (>>) (either (const $ return ()) logResponse) encodeResponse)
+                                                                    .| readerC (const output)
 
     decodeRequest :: (MonadLoggerIO m) => ByteString -> MCPT m (Either MCPError JSONRPCRequest)
     decodeRequest = either (return . Left . (flip (MCPError (-32600)) Nothing) . ("invalid JSON-RPC 2.0 request: " `append`) . pack)
                            (return . Right) . eitherDecodeStrict . C.strip
 
-    handleRequest     :: (MonadLoggerIO m) => Either MCPError JSONRPCRequest -> MCPT m (Maybe (Either MCPError Value))
-    handleRequest req = do
+    handleRequest                      :: (MonadLoggerIO m) => H.HashMap Text (RequestHandler m) -> Either MCPError JSONRPCRequest -> MCPT m (Maybe (Either MCPError Value))
+    handleRequest handlersByMethod req = do
       ctx <- ask
       st  <- fmap currentState . liftIO . atomically . readTVar $ ctx
 
@@ -143,15 +172,14 @@ server input output toolCallHandlers = do
         (Right q) -> case st of
           ServerStart        -> handleWith initializeRequestHandler q
           ServerInitializing -> handleWith initializedNotificationHandler q
-          ServerOperational  -> serverMainHandler q
+          ServerOperational  -> serverMainHandler handlersByMethod q
 
-    serverMainHandler :: (MonadLoggerIO m) => JSONRPCRequest -> MCPT m (Maybe (Either MCPError Value))
-    serverMainHandler q | method q == methodToolsList = handleWith listToolsRequestHandler q
-                        | method q == methodToolsCall = handleWith callToolRequestHandler q
-                        |                   otherwise = return . Just . Right $ object [] -- TODO: fill in stub
+    serverMainHandler                    :: (MonadLoggerIO m) => H.HashMap Text (RequestHandler m) -> JSONRPCRequest -> MCPT m (Maybe (Either MCPError Value))
+    serverMainHandler handlersByMethod q = maybe (return . Just . Left $ MCPError (-32601) ("Method not found: " `append` (method q)) Nothing)
+                                                 (\(RequestHandler m h) -> handleWith h q) $ H.lookup (method q) handlersByMethod
 
     handleWith     :: (GToJSON' Value Zero (Rep r), MCPRequest q, MCPResult r, MonadLoggerIO m)
-                   => (q              -> MCPT m (Maybe (Either MCPError r)))
+                   => (q -> MCPT m (Maybe (Either MCPError r)))
                    -> (JSONRPCRequest -> MCPT m (Maybe (Either MCPError Value)))
     handleWith h q = either (const $ (return . Just . Left $ invalidParams)) handle . parseEither parseJSON . reqParams $ q
       where invalidParams = MCPError (-32602) "invalid parameters for request" Nothing
@@ -180,22 +208,6 @@ server input output toolCallHandlers = do
       logServerDebug "Initialized."
       liftIO . atomically $ modifyTVar ctx (\s -> s { currentState = ServerOperational })
       return Nothing
-
-    listToolsRequestHandler   :: (MonadLoggerIO m) => ListToolsRequest -> MCPT m (Maybe (Either MCPError ListToolsResult))
-    listToolsRequestHandler _ = do
-      ctx <- ask
-      ts <- fmap serverTools . liftIO . atomically . readTVar $ ctx
-
-      return . Just . Right $ ListToolsResult (tool <$> ts)
-
-    -- TODO: response content types other than just text
-    callToolRequestHandler     :: (MonadLoggerIO m) => CallToolRequest -> MCPT m (Maybe (Either MCPError CallToolResult))
-    callToolRequestHandler req = do
-      ctx <- ask
-      ts <- fmap serverTools . liftIO . atomically . readTVar $ ctx
-
-      result <- maybe (return . Left $ MCPError (-32602) ("Unknown tool: " `append` (getField @"name" req)) Nothing) (return . Right . ($ req) . handler) $ find ((== getField @"name" req) . getField @"name" . tool) ts
-      either (return . Just . Left) (fmap Just) result
 
     logRequest :: (MonadLoggerIO m) => JSONRPCRequest -> MCPT m ()
     logRequest = logServerDebug . ("=<< Received request: " `append`) . toStrict . encodeToLazyText
