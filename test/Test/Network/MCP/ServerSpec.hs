@@ -91,7 +91,7 @@ spec = describe "MCP server" $ do
     let input       = sourceAndWait initJSONs
     let output      = takeC 1 .| mapM_C initializeResultDecoder
 
-    liftIO . runNoLoggingT $ server input output []
+    liftIO . runNoLoggingT $ server input output [] defaultRequestHandlers
 
     -- TODO: strengthen expectation in light of above note
     True `shouldBe` True
@@ -109,10 +109,11 @@ spec = describe "MCP server" $ do
                                                           "string"
                                                           True
                                  ]
+                                 Nothing
                                  echoHandler
 
     s <- liftIO . atomically . newTVar $ ClientStart
-    liftIO . runNoLoggingT $ server input (echoClient s) [ echoConfig ]
+    liftIO . runNoLoggingT $ server input (echoClient s) [ echoConfig ] defaultRequestHandlers
 
     -- TODO: strengthen expectation in light of above note
     True `shouldBe` True

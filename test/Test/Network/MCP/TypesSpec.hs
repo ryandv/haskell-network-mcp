@@ -1,3 +1,4 @@
+{-# LANGUAGE DisambiguateRecordFields #-}
 {-# LANGUAGE OverloadedStrings #-}
 module Test.Network.MCP.TypesSpec where
 
@@ -147,6 +148,44 @@ spec = context "json marshalling" $ do
       let jsonText   = TL.unpack $ encodeToLazyText subject
       C.unpack json `shouldBe` "null"
       jsonText `shouldBe` "null"
+
+  describe "ListToolsResult encoding" $ do
+    it "encodes" $ do
+      let tool = Tool { name = "echo"
+                      , description = Just ("returns its input" :: T.Text)
+                      , inputSchema = InputSchema (Just . M.fromList $ [ "text" .= object [ "type"        .= ("string" :: T.Text)
+                                                                                          , "description" .= ("input to be returned as output" :: T.Text)
+                                                                                          ]
+                                                                       ])
+                                                  (Just . V.fromList $ ["echo"])
+                      , annotations = Just $ ToolAnnotations { title = "echo tool"
+                                                             , readOnlyHint = Just True
+                                                             , destructiveHint = Just False
+                                                             , idempotentHint = Just True
+                                                             , openWorldHint = Just False
+                                                             }
+                      }
+      let subject = ListToolsResult . V.fromList $ [tool]
+
+      let json = encode subject
+
+      C.unpack json `shouldBe` "{\"tools\":[{\"name\":\"echo\",\"description\":\"returns its input\",\"inputSchema\":{\"properties\":{\"text\":{\"description\":\"input to be returned as output\",\"type\":\"string\"}},\"required\":[\"echo\"],\"type\":\"object\"},\"annotations\":{\"title\":\"echo tool\",\"readOnlyHint\":true,\"destructiveHint\":false,\"idempotentHint\":true,\"openWorldHint\":false}}]}"
+
+    it "omits absent annotations" $ do
+      let tool = Tool { name = "echo"
+                      , description = Just ("returns its input" :: T.Text)
+                      , inputSchema = InputSchema (Just . M.fromList $ [ "text" .= object [ "type"        .= ("string" :: T.Text)
+                                                                                          , "description" .= ("input to be returned as output" :: T.Text)
+                                                                                          ]
+                                                                       ])
+                                                  (Just . V.fromList $ ["echo"])
+                      , annotations = Nothing
+                      }
+      let subject = ListToolsResult . V.fromList $ [tool]
+
+      let json = encode subject
+
+      C.unpack json `shouldBe` "{\"tools\":[{\"name\":\"echo\",\"description\":\"returns its input\",\"inputSchema\":{\"properties\":{\"text\":{\"description\":\"input to be returned as output\",\"type\":\"string\"}},\"required\":[\"echo\"],\"type\":\"object\"}}]}"
 
   describe "CallToolRequest encoding" $ do
     it "encodes" $ do

@@ -71,7 +71,6 @@ data ServerContext m = ServerContext
   , serverTools            :: Vector (ToolCallHandler m)
   }
 
--- TODO: tool annotations
 data ToolArgumentDescriptor = ToolArgumentDescriptor
   { argName        :: Text
   , argDescription :: Text
@@ -87,15 +86,15 @@ data RequestHandler m = forall q r. (GToJSON' Value Zero (Rep r), MCPRequest q, 
   , requestHandler :: q -> MCPT m (Maybe (Either MCPError r))
   }
 
--- TODO: tool annotations
-toolBuilder            :: (Monad m)
-                       => Text
-                       -> Text
-                       -> [ToolArgumentDescriptor]
-                       -> (CallToolRequest -> MCPT m (Either ToolError CallToolResult))
-                       -> ToolCallHandler m
-toolBuilder n d args h = ToolCallHandler tl (h >=> either (return . mapError) (return . Right))
-  where tl   = Tool n (Just d) is Nothing
+toolBuilder               :: (Monad m)
+                          => Text
+                          -> Text
+                          -> [ToolArgumentDescriptor]
+                          -> Maybe ToolAnnotations
+                          -> (CallToolRequest -> MCPT m (Either ToolError CallToolResult))
+                          -> ToolCallHandler m
+toolBuilder n d args as h = ToolCallHandler tl (h >=> either (return . mapError) (return . Right))
+  where tl   = Tool n (Just d) is as
         is   = InputSchema (Just . M.fromList
                                  . fmap (\a -> (fromText (argName a), object [ ("type" .= argType a), ("description" .= argDescription a) ]))
                                  $ args)
