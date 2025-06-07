@@ -58,7 +58,7 @@ import Network.MCP.Types
 
 import qualified System.IO as SIO
 
-data ToolCallHandler m  = ToolCallHandler
+data ToolCallHandler m = ToolCallHandler
   { tool    :: Tool
   , handler :: CallToolRequest -> MCPT m (Either MCPError CallToolResult)
   }
@@ -155,35 +155,35 @@ server input output toolCallHandlers requestHandlers = do
   where
     mainConduit handlersByMethod = lineAsciiC (mapMC decodeRequest) .| mapMC (liftA2 (>>) (either (logServerError . pack . show) logRequest) (handleRequest handlersByMethod))
                                                                     .| mapWhileC Prelude.id
-                                                                    .| mapMC (liftA2 (>>) (either (const $ return ()) logResponse) encodeResponse)
+                                                                    .| mapMC (liftA2 (>>) (either (logServerError . pack . show) logResponse) encodeResponse)
                                                                     .| readerC (const output)
 
     decodeRequest :: (MonadLoggerIO m) => ByteString -> MCPT m (Either MCPError JSONRPCRequest)
     decodeRequest = either (return . Left . (flip (MCPError (-32600)) Nothing) . ("invalid JSON-RPC 2.0 request: " `append`) . pack)
                            (return . Right) . eitherDecodeStrict . C.strip
 
-    handleRequest                      :: (MonadLoggerIO m) => H.HashMap Text (RequestHandler m) -> Either MCPError JSONRPCRequest -> MCPT m (Maybe (Either MCPError Value))
+    handleRequest                      :: (MonadLoggerIO m) => H.HashMap Text (RequestHandler m) -> Either MCPError JSONRPCRequest -> MCPT m (Maybe (Either Value Value))
     handleRequest handlersByMethod req = do
       ctx <- ask
       st  <- fmap currentState . liftIO . atomically . readTVar $ ctx
 
       case req of
-        (Left e)  -> return . Just $ Left e
+        (Left e)  -> return . Just . Left . mcpErrorJSON Nothing $ e
         (Right q) -> case st of
           ServerStart        -> handleWith initializeRequestHandler q
           ServerInitializing -> handleWith initializedNotificationHandler q
           ServerOperational  -> serverMainHandler handlersByMethod q
 
-    serverMainHandler                    :: (MonadLoggerIO m) => H.HashMap Text (RequestHandler m) -> JSONRPCRequest -> MCPT m (Maybe (Either MCPError Value))
-    serverMainHandler handlersByMethod q = maybe (return . Just . Left $ MCPError (-32601) ("Method not found: " `append` (method q)) Nothing)
+    serverMainHandler                    :: (MonadLoggerIO m) => H.HashMap Text (RequestHandler m) -> JSONRPCRequest -> MCPT m (Maybe (Either Value Value))
+    serverMainHandler handlersByMethod q = maybe (return . Just . Left . mcpErrorJSON (id q) $ MCPError (-32601) ("Method not found: " `append` (method q)) Nothing)
                                                  (\(RequestHandler m h) -> handleWith h q) $ H.lookup (method q) handlersByMethod
 
     handleWith     :: (GToJSON' Value Zero (Rep r), MCPRequest q, MCPResult r, MonadLoggerIO m)
                    => (q -> MCPT m (Maybe (Either MCPError r)))
-                   -> (JSONRPCRequest -> MCPT m (Maybe (Either MCPError Value)))
-    handleWith h q = either (const $ (return . Just . Left $ invalidParams)) handle . parseEither parseJSON . reqParams $ q
+                   -> (JSONRPCRequest -> MCPT m (Maybe (Either Value Value)))
+    handleWith h q = either (const $ (return . Just . Left . mcpErrorJSON (id q) $ invalidParams)) handle . parseEither parseJSON . reqParams $ q
       where invalidParams = MCPError (-32602) "invalid parameters for request" Nothing
-            handle        = h >=> return . fmap (either Left (Right . mcpResultJSON (id q)))
+            handle        = h >=> return . fmap (either (Left . mcpErrorJSON (id q)) (Right . mcpResultJSON (id q)))
             reqParams     = maybe (Object M.empty) Prelude.id . params
 
     initializeRequestHandler     :: (MonadLoggerIO m) => InitializeRequest -> MCPT m (Maybe (Either MCPError InitializeResult))
@@ -214,7 +214,8 @@ server input output toolCallHandlers requestHandlers = do
 
     logResponse = logServerDebug . (">>= Sending response: " `append`) . toStrict . encodeToLazyText
 
-    encodeResponse = maybe (return empty) return . either (return . (flip C.snoc $ '\n') . B.toStrict . encode) (return . (flip C.snoc $ '\n') . B.toStrict . encode)
+    encodeResponse = maybe (return empty) return . either encodeLn encodeLn
+    encodeLn       = return . (flip C.snoc $ '\n') . B.toStrict . encode
 
 logServer         :: (MonadLoggerIO m)
                   => LogLevel

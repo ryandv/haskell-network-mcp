@@ -53,6 +53,14 @@ callToolResultDecoder expected = liftIO . (maybe (expectationFailure "failed to 
   where printRPCPayload :: (MonadIO m, MonadLogger m, Show a) => a -> m a
         printRPCPayload = liftA2 (>>) (liftA2 (>>) (liftIO . print) (const . liftIO $ print "=====\n")) (return)
 
+errorDecoder          :: (MonadIO m, MonadLogger m) => MCPError -> B.ByteString -> m ()
+errorDecoder expected = liftIO . (either (expectationFailure . ("failed to decode error: " ++)) (`shouldBe` expected)
+                               . ((parseEither (either fail (withObject "error" (.: "error")))) :: Either String Value -> Either String MCPError)
+                               . (eitherDecode                                                  :: L.ByteString -> Either String Value)
+                               . L.fromStrict)
+  where printRPCPayload :: (MonadIO m, MonadLogger m, Show a) => a -> m a
+        printRPCPayload = liftA2 (>>) (liftA2 (>>) (liftIO . print) (const . liftIO $ print "=====\n")) (return)
+
 data EchoArguments = EchoArguments
   { text :: T.Text
   } deriving(Eq, Generic, Show)
@@ -67,12 +75,6 @@ echoHandler = handleToolCall (\(EchoArguments txt) -> return . Right $ CallToolR
 
 data ClientState = ClientStart | ClientInitializing | ClientOperational
 
-echoClient s = do
-  st <- liftIO . atomically . readTVar $ s
-  case st of
-    ClientStart        -> ((linesUnboundedAsciiC .| await) >>= (maybe (return ()) initializeResultDecoder)) >> (liftIO . atomically . swapTVar s $ ClientOperational)
-    ClientOperational  -> ((linesUnboundedAsciiC .| await) >>= (maybe (return ()) (callToolResultDecoder "hello world"))) >> (return ClientOperational)
-  return ()
 
 spec :: Spec
 spec = describe "MCP server" $ do
@@ -111,6 +113,11 @@ spec = describe "MCP server" $ do
                                  ]
                                  Nothing
                                  echoHandler
+    let echoClient s = do st <- liftIO . atomically . readTVar $ s
+                          case st of
+                            ClientStart        -> ((linesUnboundedAsciiC .| await) >>= (maybe (return ()) initializeResultDecoder)) >> (liftIO . atomically . swapTVar s $ ClientOperational)
+                            ClientOperational  -> ((linesUnboundedAsciiC .| await) >>= (maybe (return ()) (callToolResultDecoder "hello world"))) >> (return ClientOperational)
+                          return ()
 
     s <- liftIO . atomically . newTVar $ ClientStart
     liftIO . runNoLoggingT $ server input (echoClient s) [ echoConfig ] defaultRequestHandlers
@@ -118,5 +125,21 @@ spec = describe "MCP server" $ do
     -- TODO: strengthen expectation in light of above note
     True `shouldBe` True
 
-  -- TODO: test coverage for tool not found; should return -32602 "Unknown tool: $TOOL_NAME"
+  it "returns error -32602 for unknown tools" $ do
+    let callToolReq   = CallToolRequest "echo" . Just $ M.fromList [("text", "hello world")]
+    let callToolJSON  = L.toStrict . encode $ mcpRequestJSON (Just $ Left 0) callToolReq
+
+    let input         = sourceAndWait $ [initReqJSON, initNotJSON, callToolJSON]
+
+    let echoClient s = do st <- liftIO . atomically . readTVar $ s
+                          case st of
+                            ClientStart        -> ((linesUnboundedAsciiC .| await) >>= (maybe (return ()) initializeResultDecoder)) >> (liftIO . atomically . swapTVar s $ ClientOperational)
+                            ClientOperational  -> ((linesUnboundedAsciiC .| await) >>= (maybe (return ()) (errorDecoder (MCPError (-32602) "Unknown tool: echo" Nothing)))) >> (return ClientOperational)
+                          return ()
+    s <- liftIO . atomically . newTVar $ ClientStart
+    liftIO . runNoLoggingT $ server input (echoClient s) [ ] defaultRequestHandlers
+
+    -- TODO: strengthen expectation in light of above note
+    True `shouldBe` True
+
   -- TODO: test coverage for invalid tool arguments; should return -32602?

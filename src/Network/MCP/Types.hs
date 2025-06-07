@@ -38,6 +38,8 @@ module Network.MCP.Types
   , MCPRequest(..)
   , MCPResult(..)
 
+  , mcpErrorJSON
+
   , methodInitialize
   , methodToolsCall
   , methodToolsList
@@ -102,8 +104,13 @@ data MCPError = MCPError
   , errorData  :: Maybe Value
   } deriving(Eq, Generic, Show)
 
+mcpErrorJSON       :: Maybe (Either Integer Text) -> MCPError -> Value
+mcpErrorJSON rid e = object ([ "jsonrpc" .= ("2.0" :: Text)
+                             , "error"  .= toJSON e
+                             ] Prelude.++ (optionalPair "id" (fmap (either toJSON toJSON) rid)))
+
 instance FromJSON MCPError where
-  parseJSON (Object o) = MCPError <$> o .: "code" <*> o .: "message" <*> o .: "data"
+  parseJSON (Object o) = MCPError <$> o .: "code" <*> o .: "message" <*> (o .: "data" <|> return Nothing)
   parseJSON _          = mempty
 instance ToJSON MCPError where
   toEncoding (MCPError c m d) = pairs (  "code"    .= c
