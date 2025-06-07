@@ -7,6 +7,7 @@
 
 module Network.MCP.Server
   ( MCPT
+  , ToolCallHandler(..)
   , ToolError(..)
   , ToolArgumentDescriptor(..)
 
@@ -81,7 +82,7 @@ data ToolArgumentDescriptor = ToolArgumentDescriptor
 data ToolError = ArgumentError Text | ExecutionError Text
 
 type MCPT m = ReaderT (TVar (ServerContext m)) m
-data RequestHandler m = forall q r. (GToJSON' Value Zero (Rep r), MCPRequest q, MCPResult r, MonadLoggerIO m ) => RequestHandler
+data RequestHandler m = forall q r. (GToJSON' Value Zero (Rep r), MCPRequest q, MCPResult r, MonadLoggerIO m) => RequestHandler
   { requestMethod  :: Text
   , requestHandler :: q -> MCPT m (Maybe (Either MCPError r))
   }
@@ -197,7 +198,7 @@ server input output toolCallHandlers requestHandlers = do
 
         return . Just . Right $ InitializeResult
           { capabilities = serverCaps
-          , serverInfo   = Implementation "haskell-network-mcp" "v0.0.1"
+          , serverInfo   = Implementation "haskell-network-mcp" "v0.0.0.1"
           , instructions = Nothing
           }
 
