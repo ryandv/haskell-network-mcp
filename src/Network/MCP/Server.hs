@@ -158,9 +158,11 @@ server input output toolCallHandlers requestHandlers = do
                                                                     .| mapMC (liftA2 (>>) (either (logServerError . pack . show) logResponse) encodeResponse)
                                                                     .| readerC (const output)
 
-    decodeRequest :: (MonadLoggerIO m) => ByteString -> MCPT m (Either MCPError JSONRPCRequest)
-    decodeRequest = either (return . Left . (flip (MCPError (-32600)) Nothing) . ("invalid JSON-RPC 2.0 request: " `append`) . pack)
-                           (return . Right) . eitherDecodeStrict . C.strip
+    decodeRequest   :: (MonadLoggerIO m) => ByteString -> MCPT m (Either MCPError JSONRPCRequest)
+    decodeRequest q = either (return . Left . (flip (MCPError (-32600)) Nothing) . (`append` (": " `append` (pack $ C.unpack q))) . ("invalid JSON-RPC 2.0 request: " `append`) . pack)
+                             (return . Right) . eitherDecodeStrict
+                                              . C.strip
+                                              $ q
 
     handleRequest                      :: (MonadLoggerIO m) => H.HashMap Text (RequestHandler m) -> Either MCPError JSONRPCRequest -> MCPT m (Maybe (Either Value Value))
     handleRequest handlersByMethod req = do

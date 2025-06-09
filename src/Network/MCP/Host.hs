@@ -20,6 +20,7 @@ import Control.Concurrent
 import Control.Concurrent.STM
 import Control.Concurrent.STM.TQueue
 import Control.Monad
+import Control.Monad.IO.Unlift
 import Control.Monad.Trans.Reader
 import Control.Monad.Logger
 
@@ -59,7 +60,7 @@ data ClientContext = ClientContext
 type MCPClientT m = ReaderT (TVar ClientContext) m
 data ClientRequest = forall q. (GToJSON' Value Zero (Rep q), MCPRequest q) => ClientRequest q
 
-data ServerResponseHandler m = forall r. (GToJSON' Value Zero (Rep r), MCPResult r, MonadLoggerIO m) => ServerResponseHandler (r -> MCPClientT m ())
+data ServerResponseHandler m = forall r. (GToJSON' Value Zero (Rep r), MCPResult r, MonadLoggerIO m, MonadUnliftIO m) => ServerResponseHandler (r -> MCPClientT m ())
 
 initialContext :: ClientContext
 initialContext = ClientContext ClientStart
@@ -86,7 +87,7 @@ clientWith reqs handlers input output = do
     qs     <- liftIO . atomically . flushTQueue  $ reqs
     ids    <- liftIO . mapM (const $ nextRandom) $ qs
 
-    let bs = L.toStrict . encode . encodeClientRequests <$> Prelude.zip ids qs
+    let bs = (flip C.snoc $ '\n') . L.toStrict . encode . encodeClientRequests <$> Prelude.zip ids qs
 
     runConduit $ yieldMany bs .| sinkHandle input
 
@@ -125,7 +126,7 @@ clientWith reqs handlers input output = do
             ClientOperational -> do
               let handler = List.find (const True) $ handlers
               maybe (return Nothing)
-                    (\(ServerResponseHandler h) -> (either (const $ lift . logWithoutLoc "Client" LevelError $ ("shit" :: Text)) h . parseEither (withObject "MCP Response" (.: "result")) $ r) >> return Nothing)
+                    (\(ServerResponseHandler h) -> (either (const $ lift . logWithoutLoc "Client" LevelError $ ("shit" :: Text)) (\r -> withRunInIO (\run -> void . forkIO $ (run $ (h r)))) . parseEither (withObject "MCP Response" (.: "result")) $ r) >> return Nothing)
                     handler
             _                 -> return Nothing
 
