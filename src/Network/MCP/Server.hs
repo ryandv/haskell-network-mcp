@@ -79,7 +79,7 @@ data ToolArgumentDescriptor = ToolArgumentDescriptor
   , argRequired    :: Bool
   } deriving(Eq, Show)
 
-data ToolError = ArgumentError Text | ExecutionError Text
+data ToolError = ArgumentError Text | ExecutionError Text deriving(Eq, Show)
 
 type MCPT m = ReaderT (TVar (ServerContext m)) m
 data RequestHandler m = forall q r. (GToJSON' Value Zero (Rep r), MCPRequest q, MCPResult r, MonadLoggerIO m) => RequestHandler
