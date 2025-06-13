@@ -16,6 +16,7 @@ module Network.MCP.Host
 
 import Conduit
 
+import Control.Applicative hiding(empty)
 import Control.Concurrent
 import Control.Concurrent.STM
 import Control.Concurrent.STM.TQueue
@@ -60,7 +61,7 @@ data ClientContext = ClientContext
 type MCPClientT m = ReaderT (TVar ClientContext) m
 data ClientRequest = forall q. (GToJSON' Value Zero (Rep q), MCPRequest q) => ClientRequest q
 
-data ServerResponseHandler m = forall r. (GToJSON' Value Zero (Rep r), MCPResult r, MonadLoggerIO m, MonadUnliftIO m) => ServerResponseHandler (r -> MCPClientT m ())
+data ServerResponseHandler m = forall r. (GToJSON' Value Zero (Rep r), MCPResult r, MonadLoggerIO m, MonadUnliftIO m) => ServerResponseHandler (Either MCPError r -> MCPClientT m ())
 
 initialContext :: ClientContext
 initialContext = ClientContext ClientStart
@@ -126,7 +127,7 @@ clientWith reqs handlers input output = do
             ClientOperational -> do
               let handler = List.find (const True) $ handlers
               maybe (return Nothing)
-                    (\(ServerResponseHandler h) -> (either (const $ lift . logWithoutLoc "Client" LevelError $ ("shit" :: Text)) (\r -> withRunInIO (\run -> void . forkIO $ (run $ (h r)))) . parseEither (withObject "MCP Response" (.: "result")) $ r) >> return Nothing)
+                    (\(ServerResponseHandler h) -> (either (lift . logWithoutLoc "Client" LevelError . ("failed to parse MCP payload: " `append`) . pack) (\r -> withRunInIO (\run -> void . forkIO $ (run $ (h r)))) . parseEither (liftA2 (<|>) (fmap Right . withObject "MCP Response" (.: "result")) (fmap Left . withObject "MCP Error" (.: "error"))) $ r) >> return Nothing)
                     handler
             _                 -> return Nothing
 
